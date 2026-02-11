@@ -10,6 +10,9 @@ import socket
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+_IS_WINDOWS = platform.system().lower() == "windows"
+_SUBPROCESS_FLAGS = {"creationflags": 0x08000000} if _IS_WINDOWS else {}
+
 
 def _ttl_os_guess(ttl):
     """Guess OS family from ping TTL value."""
@@ -28,48 +31,49 @@ def _ttl_os_guess(ttl):
 def _ping_host(ip: str, timeout: int = 1, count: int = 1) -> dict:
     """Ping a single host and return result dict."""
     ip_str = str(ip)
-    start = time.perf_counter()
 
-    is_windows = platform.system().lower() == "windows"
-    param = "-n" if is_windows else "-c"
-    timeout_flag = "-w" if is_windows else "-W"
+    param = "-n" if _IS_WINDOWS else "-c"
+    timeout_flag = "-w" if _IS_WINDOWS else "-W"
     # Windows -w expects milliseconds; Linux/Mac -W expects seconds
-    timeout_value = str(timeout * 1000) if is_windows else str(timeout)
+    timeout_value = str(timeout * 1000) if _IS_WINDOWS else str(timeout)
     ping_count = str(count) if count else "1"
 
+    cmd = ["ping", param, ping_count, timeout_flag, timeout_value, ip_str]
+
     try:
+        start = time.perf_counter()
         result = subprocess.run(
-            ["ping", param, ping_count, timeout_flag, timeout_value, ip_str],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=(timeout * count) + 4,
+            **_SUBPROCESS_FLAGS,
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
 
-        # For multi-ping, alive if ANY reply received (returncode 0)
-        # On Windows with -n >1, returncode 0 even if some pings lost
         alive = result.returncode == 0
 
-        # Parse response time from ping output (average if multiple)
         response_time = None
         ttl = None
         if alive:
             output = result.stdout.decode("utf-8", errors="ignore")
-            times = []
-            for part in output.split():
-                if part.startswith("time=") or part.startswith("time<"):
-                    try:
-                        t = float(part.split("=")[-1].replace("ms", "").replace("<", ""))
-                        times.append(t)
-                    except ValueError:
-                        pass
-            if times:
-                response_time = round(sum(times) / len(times), 2)
+
+            # Parse response times with locale-independent regex.
+            # Matches time=1ms, time<1ms, tijd=0.5ms, Zeit<1ms, etc.
+            reply_times = re.findall(
+                r"[=<]\s*(\d+[.,]?\d*)\s*ms",
+                output, re.IGNORECASE
+            )
+            if reply_times:
+                parsed = [float(t.replace(",", ".")) for t in reply_times]
+                # Take only the first 'count' values (skip summary stats)
+                use = parsed[:count] if len(parsed) > count else parsed
+                response_time = round(sum(use) / len(use), 2)
             else:
                 response_time = elapsed
 
             # Parse TTL for OS fingerprinting
-            ttl_match = re.search(r"ttl[=](\d+)", output, re.IGNORECASE)
+            ttl_match = re.search(r"ttl[=]\s*(\d+)", output, re.IGNORECASE)
             if ttl_match:
                 ttl = int(ttl_match.group(1))
 

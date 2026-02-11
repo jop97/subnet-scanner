@@ -1,5 +1,5 @@
 """
-Subnet Scanner v1.1.0 — Flask Application
+Subnet Scanner v1.1.2 — Flask Application
 A modern network scanning web application.
 """
 
@@ -8,9 +8,9 @@ from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from config import Config
 from scanner.ping_sweep import ping_sweep, _ping_host
-from scanner.nmap_scanner import scan_host, quick_scan, full_scan
+from scanner.nmap_scanner import scan_host, quick_scan, full_scan, full_scan_with_progress
 from scanner.host_info import get_full_host_info
-from scanner.deep_scan import deep_scan_host, ssdp_discover, get_arp_table_full, get_mac_vendor
+from scanner.deep_scan import deep_scan_host, get_arp_table_full, get_mac_vendor
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -142,7 +142,6 @@ def handle_stop_scan(data):
 def handle_scan_host_detail(data):
     """Run a detailed nmap scan on a specific host (via WebSocket)."""
     ip = data.get("ip")
-    scan_type = data.get("scan_type", "quick")
 
     if not ip:
         emit("host_detail_error", {"error": "No IP provided"})
@@ -152,15 +151,42 @@ def handle_scan_host_detail(data):
 
     def run_detail_scan():
         try:
-            # Get host info
+            # Phase 1: Host info (DNS, NetBIOS, ARP, WHOIS)
+            socketio.emit("host_detail_progress", {
+                "ip": ip, "phase": 1, "total": 3,
+                "label": "Gathering DNS, NetBIOS & WHOIS info..."
+            })
             host_info = get_full_host_info(ip)
 
-            # Always run a full nmap scan for the detail modal
-            nmap_result = full_scan(ip)
+            # Phase 2: Nmap full scan
+            socketio.emit("host_detail_progress", {
+                "ip": ip, "phase": 2, "total": 3,
+                "label": "Running Nmap scan (top 1000 ports)..."
+            })
 
-            # Run deep scan probes (HTTP, SSL, banners)
+            def nmap_progress(pct):
+                ports_est = round(pct / 100 * 1000)
+                socketio.emit("host_detail_progress", {
+                    "ip": ip, "phase": 2, "total": 3,
+                    "label": f"Nmap scan — ~{ports_est}/1000 ports...",
+                    "sub_progress": pct,
+                    "ports_done": ports_est,
+                    "ports_total": 1000,
+                })
+
+            nmap_result = full_scan_with_progress(ip, progress_callback=nmap_progress)
+
+            # Phase 3: Deep scan probes
             open_ports = nmap_result.get("open_ports", [])
-            deep_result = deep_scan_host(ip, open_ports, timeout=5)
+            # Pass MAC from earlier phases to avoid redundant ARP call
+            known_mac = (nmap_result.get("mac_address")
+                         or host_info.get("mac_from_arp"))
+            socketio.emit("host_detail_progress", {
+                "ip": ip, "phase": 3, "total": 3,
+                "label": "Probing HTTP, SSL & banners..."
+            })
+            deep_result = deep_scan_host(ip, open_ports, timeout=5,
+                                         arp_mac=known_mac)
 
             combined = {**host_info, **nmap_result, **deep_result}
             socketio.emit("host_detail_result", combined)
@@ -215,19 +241,17 @@ def handle_batch_nmap_scan(data):
 
 @socketio.on("batch_full_scan")
 def handle_batch_full_scan(data):
-    """Run nmap + deep scan probes on all online hosts."""
+    """Run nmap scan on all online hosts for table display (ports, OS, MAC).
+
+    Only gathers data shown in the list table. Deep probes (HTTP, SSL,
+    banners, SSDP) are skipped here — the detail modal does a full
+    independent scan when opened.
+    """
     ips = data.get("ips", [])
     if not ips:
         return
 
-    # Deep scan settings from client
     nmap_args = data.get("nmap_args", "-sV --top-ports 20 -T4")
-    deep_timeout = max(1, min(data.get("deep_timeout", 5), 30))
-    ssdp_timeout = max(1, min(data.get("ssdp_timeout", 4), 15))
-    probe_http = data.get("deep_http", True)
-    probe_ssl = data.get("deep_ssl", True)
-    probe_banners = data.get("deep_banners", True)
-    probe_ssdp = data.get("deep_ssdp", True)
     probe_mac_vendor = data.get("deep_mac_vendor", True)
 
     scan_id = "batch_full_scan"
@@ -239,38 +263,32 @@ def handle_batch_full_scan(data):
         total = len(ips)
         done = 0
 
-        # Pre-scan: gather L2/network-wide data once
+        # Gather ARP table once for MAC lookups
         socketio.emit("batch_full_scan_progress", {
             "done": 0,
             "total": total,
             "progress": 0,
-            "phase": "L2 discovery (SSDP + ARP table)...",
+            "phase": "Reading ARP table...",
         })
-        ssdp_data = ssdp_discover(timeout=ssdp_timeout) if probe_ssdp else {}
         arp_table = get_arp_table_full()
 
         def scan_one(ip):
             if not active_scans.get(scan_id, False):
                 return {"ip": ip, "error": "Cancelled"}
             try:
-                # Nmap scan with client-specified arguments
                 nmap_result = scan_host(ip, arguments=nmap_args, timeout=30)
-                open_ports = nmap_result.get("open_ports", [])
 
-                # Deep scan probes with pre-gathered L2 data
-                deep_result = deep_scan_host(
-                    ip, open_ports, timeout=deep_timeout,
-                    ssdp_info=ssdp_data.get(ip),
-                    arp_mac=arp_table.get(ip),
-                    probe_http=probe_http,
-                    probe_ssl=probe_ssl,
-                    probe_banners=probe_banners,
-                    probe_mac_vendor=probe_mac_vendor,
-                )
+                # MAC / vendor from ARP (shown in table)
+                mac = arp_table.get(ip) or nmap_result.get("mac_address")
+                if mac:
+                    nmap_result["mac_from_arp"] = mac
+                    if probe_mac_vendor:
+                        vendor = get_mac_vendor(mac)
+                        if vendor:
+                            nmap_result["mac_vendor"] = vendor
 
-                # Merge
-                merged = {**nmap_result, **deep_result, "ip": ip}
-                return merged
+                nmap_result["ip"] = ip
+                return nmap_result
             except Exception as e:
                 return {"ip": ip, "error": str(e)}
 

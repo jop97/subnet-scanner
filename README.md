@@ -1,8 +1,8 @@
-﻿# Subnet Scanner v1.1.0
+﻿# Subnet Scanner v1.1.2
 
 A real-time network scanning web application built with Flask, Socket.IO, and Nmap. Discover hosts on your network with a clean dark UI featuring a visual IP grid, live status updates, and detailed host information.
 
-![Version](https://img.shields.io/badge/Version-1.1.0-cyan)
+![Version](https://img.shields.io/badge/Version-1.1.2-cyan)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.x-green?logo=flask&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -37,21 +37,28 @@ A real-time network scanning web application built with Flask, Socket.IO, and Nm
 | Button | What it does |
 |--------|-------------|
 | **Quick Sweep** | Fast ICMP ping sweep only. Discovers which hosts are online/offline with response time, hostname, and TTL-based OS guess. |
-| **Full Scan** | Ping sweep **+** Nmap port/service scan **+** deep scan probes on every online host. Runs automatically in sequence: ping > nmap > HTTP/SSL/banner/SSDP/ARP/MAC vendor. All probes are individually toggleable in Settings. |
+| **Full Scan** | Ping sweep **+** Nmap port/service scan **+** MAC/vendor lookup on every online host. Runs automatically in sequence: ping > nmap > ARP/MAC vendor. The detail modal performs the full deep scan (HTTP/SSL/banners/SSDP) independently when opened. |
 
-### Deep Scan Probes (Full Scan)
+### Full Scan Probes (table columns)
 - **Nmap port & service detection**  Top 20 ports with version fingerprinting (`-sV`)
+- **MAC vendor lookup**  OUI database resolves MAC addresses to manufacturer names (e.g. `Intel Corporate`, `Apple, Inc.`)
+- **Full ARP table scan**  Reads all known MACs on the network in one call before per-host scanning
+- **TTL-based OS guessing**  Immediate OS family guess (Linux/Windows/Network Device) from ping TTL
+
+### Detail Modal Probes (full deep scan)
+The detail modal always runs a complete independent scan with all probes:
+- **Nmap full scan**  Top 1000 ports with service/version detection and scripts, with real-time port progress
 - **HTTP/HTTPS probing**  Server header, page title, redirect chain, security headers (separate sections for HTTP and HTTPS)
 - **SSL/TLS certificate analysis**  Subject, issuer, validity dates, SANs, cipher suite, port indicator
 - **TCP banner grabbing**  Raw banners from SSH, FTP, SMTP, MySQL, RDP, and more (with protocol names)
-- **MAC vendor lookup**  OUI database resolves MAC addresses to manufacturer names (e.g. `Intel Corporate`, `Apple, Inc.`)
+- **MAC vendor lookup**  OUI database resolves MAC addresses to manufacturer names
 - **SSDP/UPnP discovery**  Multicast M-SEARCH finds smart devices, routers, IoT, media servers
-- **Full ARP table scan**  Reads all known MACs on the network in one call before per-host scanning
-- **TTL-based OS guessing**  Immediate OS family guess (Linux/Windows/Network Device) from ping TTL
 - **WHOIS lookup**  Basic WHOIS information for the IP address
+- **DNS / NetBIOS**  Reverse DNS, NetBIOS name and workgroup resolution
 
 ### Host Detail Modal
-Click any host for a deep-dive view combining all scan data:
+Click any host for a deep-dive view with a full independent scan (3-phase progress tracker with real-time Nmap port progress):
+- **3-phase progress tracker** — DNS/NetBIOS/WHOIS → Nmap scan (~N/1000 ports) → HTTP/SSL/banner probes
 - **Basic info** — IP, status, hostname, response time, reverse DNS, MAC address, vendor (OUI), NetBIOS name & workgroup
 - **All hostnames** — Full nmap hostnames array with type labels (PTR, user, etc.)
 - **Port & service table** — With version info, CPE identifiers per service, and per-port NSE script output
@@ -450,7 +457,7 @@ Nmap scan on a single host. Body: `{ "scan_type": "quick" | "full" }`
 | `batch_nmap_scan`| `{ ips: [...] }`                        | Nmap only on all listed IPs           |
 | `stop_batch_scan`| `{}`                                    | Stop running batch scan               |
 | `live_update`    | `{ ips: [...], ping_count: 2 }`         | Re-ping listed IPs                    |
-| `scan_host_detail`| `{ ip, scan_type }`                    | Detailed host scan                    |
+| `scan_host_detail`| `{ ip }`                               | Detailed host scan                    |
 
 #### Server > Client
 
@@ -472,6 +479,7 @@ Nmap scan on a single host. Body: `{ "scan_type": "quick" | "full" }`
 | `live_update_progress`    | Live update cycle progress             |
 | `live_update_complete`    | Live update cycle finished             |
 | `host_detail_scanning`    | Detail scan started                    |
+| `host_detail_progress`    | Detail scan phase progress (phase/total/label) |
 | `host_detail_result`      | Detail scan complete                   |
 | `host_detail_error`       | Detail scan failed                     |
 
@@ -560,6 +568,113 @@ python app.py
 ```
 
 Debug mode is enabled by default  the server auto-reloads on file changes.
+
+---
+
+## Changelog
+
+### v1.1.2
+
+**Full Scan Optimization**
+- Removed deep scan probes (HTTP, SSL, banners, SSDP) from the batch full scan — only nmap + MAC/vendor is needed for the table columns
+- Significantly faster full scan completion time
+- Detail modal always performs a complete independent scan with all probes when opened
+
+**Nmap Port Progress in Detail Modal**
+- Detail modal now shows real-time nmap port progress (~N/1000 ports) during phase 2
+- Uses `--stats-every 1s` subprocess with stderr parsing for live progress updates
+- Progress bar interpolates smoothly within each scan phase
+- New `full_scan_with_progress()` function in nmap_scanner.py
+
+**Sweep Progress Fix**
+- Fixed progress stat card jumping backward during sweep (hosts returned out of order from `as_completed`)
+- Progress is now monotonic — percentage only goes up, never back
+- Eliminated double progress bar updates (was set by both `updateStats` and explicit `progressFill`)
+- Clean status transitions: Sweeping → Sweep N% → Sweep done — starting deep scan → Deep Scan N/M → Done
+
+**Live Update Data Preservation**
+- Live update no longer overwrites ports, OS, and MAC/vendor columns from full scan
+- Only status badge, response time, and hostname are updated during live pings
+- Full scan data in the table persists across all live update cycles
+
+**UI Polish**
+- Table row borders softened (`border-top: none` to override Bootstrap's bright `#dee2e6`)
+- L2 discovery phase label shown during deep scan init (was "Deep Scan 0/N")
+- Deep scan progress bar resets to 0% properly at start
+
+### v1.1.1
+
+**Detail Modal — Scan Progress Indicator**
+- Added 3-phase progress tracker in the detail modal loading screen
+- Each phase shows real-time status: pending → active (pulsing) → completed (checkmark)
+- Phases: DNS/NetBIOS/WHOIS → Nmap scan → HTTP/SSL/banner probes
+- Animated progress bar tracks overall scan progress
+- Quick info view (cached ping data) also shows the progress steps below
+
+**Ping Response Time Fix**
+- Fixed response time parsing for `time<1ms` on Windows (common for fast LAN pings)
+- Previous regex failed on `time<1ms` and fell back to subprocess elapsed time (20-100ms+ overhead)
+- New locale-independent regex handles `time=5ms`, `time<1ms`, `tijd=0.5ms` (Dutch), etc.
+- Timer now starts immediately before subprocess.run, not at function entry
+
+**MAC Vendor Optimization**
+- Detail modal now passes MAC address from phase 1/2 to phase 3, eliminating redundant ARP call
+- Previously `arp -a` was called twice: once in host_info (phase 1) and again in deep_scan (phase 3)
+
+**Code Quality**
+- Added `CREATE_NO_WINDOW` subprocess flag to ping_sweep.py for Windows consistency
+- Removed unused `scan_type` parameter from detail scan handler
+- All subprocess calls now consistently suppress console windows on Windows
+
+### v1.1.0
+
+**Host Detail Modal — Comprehensive Data Display**
+- Added separate HTTPS info section (previously only HTTP was shown)
+- Added TCP sequence prediction display (class, difficulty, index, values)
+- Added OS classes inside OS detection (type, vendor, family, generation, CPE)
+- Added CPE identifiers per service in the port table
+- Added per-port NSE script output inline in the port table
+- Added all nmap hostnames with type labels (PTR, user, etc.)
+- Added port indicators on HTTP/HTTPS/SSL section headers
+- Added WHOIS information panel (scrollable raw WHOIS data)
+- Added response time from cached ping data in basic info
+- Added human-readable uptime format (e.g. "2d 5h 30m")
+- Added protocol names on service banner labels (e.g. "Port 22 (SSH)")
+- Error messages are now HTML-escaped for safety
+
+**Smart Sweep Skip**
+- Full Scan now skips the ping sweep when results from the same subnet are already available
+- Different subnet always triggers a fresh sweep first
+
+**UI Improvements**
+- Grid blocks: fixed first-row height stretch, blocks now have consistent height
+- Grid blocks: increased text size for better readability
+- Grid blocks: slightly wider minimum width (86px)
+- List view: softened table row borders for lower contrast
+- List view: natural IP address sorting (numeric octets, matching grid view order)
+- Added `--text-secondary` CSS variable for consistent text colors
+- Footer updated with version number and feature tags
+
+**Backend**
+- `get_full_host_info()` now includes WHOIS lookup
+- Detail modal always runs full Nmap scan (top 1000 ports, 180s timeout)
+- Refactored HTTP rendering into shared `renderHttpSection()` helper
+
+**Documentation**
+- Comprehensive README update with all new features documented
+- Updated architecture diagrams and data flow descriptions
+- Added version badge
+
+### v1.0.0
+
+- Initial release
+- Ping sweep, Nmap scanning, deep scan probes
+- Grid & list views with filtering
+- Real-time Socket.IO updates
+- Settings modal with localStorage persistence
+- Live update monitoring
+- Host detail modal
+- Dark theme UI
 
 ---
 

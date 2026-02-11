@@ -1,5 +1,5 @@
 /**
- * Subnet Scanner v1.1.0 — Frontend Controller
+ * Subnet Scanner v1.1.2 — Frontend Controller
  * Handles WebSocket communication, UI updates, grid/list views, and host detail modals.
  */
 
@@ -20,6 +20,7 @@
         liveTimeout: null,
         scanCompleted: false,  // true after first scan is done
         fullScanPending: false, // true when Full Scan button was clicked
+        sweepProgress: 0,      // tracks highest sweep % (never goes backward)
     };
 
     // ── DOM References ──────────────────────────────────────────────────────
@@ -236,6 +237,7 @@
         state.socket.on('scan_started', (data) => {
             console.log('Scan started:', data.subnet);
             showToast('Scan started for ' + data.subnet, 'info');
+            state.sweepProgress = 0;
             setStatus('Sweeping...', 'scanning');
             dom.progressFill().style.width = '0%';
         });
@@ -261,6 +263,10 @@
 
         state.socket.on('host_detail_scanning', (data) => {
             showDetailLoading(data.ip);
+        });
+
+        state.socket.on('host_detail_progress', (data) => {
+            updateDetailProgress(data);
         });
 
         state.socket.on('host_detail_result', (data) => {
@@ -326,7 +332,11 @@
         });
 
         state.socket.on('batch_full_scan_progress', (data) => {
-            setStatus('Deep Scan ' + data.done + '/' + data.total, 'scanning');
+            if (data.done === 0 && data.phase) {
+                setStatus(data.phase, 'scanning');
+            } else {
+                setStatus('Deep Scan ' + data.done + '/' + data.total, 'scanning');
+            }
             dom.progressFill().style.width = data.progress + '%';
         });
 
@@ -569,26 +579,33 @@
             if (block) block.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
 
-        // Update stats
+        // Update stats — progress only goes forward
         const all = Object.values(state.results);
         const online = all.filter(r => r.alive).length;
         const offline = all.filter(r => !r.alive).length;
-        updateStats(data.total || all.length, online, offline, data.progress || 0);
+        animateNumber(dom.statTotal(), data.total || all.length);
+        animateNumber(dom.statOnline(), online);
+        animateNumber(dom.statOffline(), offline);
 
-        // Update status text & progress bar
+        // Monotonic progress: never decrease
         const pct = Math.round(data.progress || 0);
-        setStatus('Sweep ' + pct + '%', 'scanning');
-        dom.progressFill().style.width = pct + '%';
+        if (pct > state.sweepProgress) state.sweepProgress = pct;
+        setStatus('Sweep ' + state.sweepProgress + '%', 'scanning');
+        dom.progressFill().style.width = state.sweepProgress + '%';
     }
 
     function handleScanComplete(data) {
         state.scanCompleted = true;
-        updateStats(data.total, data.alive, data.dead, 100);
+        state.sweepProgress = 100;
+        animateNumber(dom.statTotal(), data.total);
+        animateNumber(dom.statOnline(), data.alive);
+        animateNumber(dom.statOffline(), data.dead);
 
         if (state.fullScanPending) {
             // Full Scan was clicked — auto-start deep scan phase
             state.fullScanPending = false;
-            setStatus('Starting deep scan...', 'scanning');
+            setStatus('Sweep done — starting deep scan...', 'scanning');
+            dom.progressFill().style.width = '100%';
             showToast(`Ping complete — ${data.alive} online. Starting deep scan...`, 'info');
             startBatchFullScan();
             return;
@@ -866,16 +883,85 @@
         state.socket.emit('scan_host_detail', { ip: ip, scan_type: scanType });
     }
 
+    const detailPhases = [
+        { icon: 'fa-network-wired', label: 'DNS, NetBIOS & WHOIS' },
+        { icon: 'fa-search',        label: 'Nmap scan (top 1000 ports)' },
+        { icon: 'fa-shield-alt',    label: 'HTTP, SSL & banner probes' }
+    ];
+
     function showDetailLoading(ip) {
+        const stepsHtml = detailPhases.map((p, i) => `
+            <div class="detail-progress-step" id="detail-step-${i}" data-step="${i}">
+                <div class="detail-step-icon pending">
+                    <i class="fas ${p.icon}"></i>
+                </div>
+                <div class="detail-step-info">
+                    <div class="detail-step-label">${p.label}</div>
+                    <div class="detail-step-status text-muted">Waiting...</div>
+                </div>
+            </div>`).join('');
+
         dom.hostDetailBody().innerHTML = `
-            <div class="text-center py-5">
-                <div class="scanner-animation" style="margin: 0 auto;"></div>
-                <p class="mt-3 text-muted">
-                    <i class="fas fa-satellite-dish fa-spin mr-1"></i>
-                    Scanning <strong class="text-cyan">${ip}</strong>...
-                </p>
-                <p class="text-muted" style="font-size:0.8rem;">Running Nmap service & OS detection</p>
+            <div class="detail-loading-container">
+                <div class="detail-loading-header">
+                    <div class="scanner-animation" style="margin: 0 auto;"></div>
+                    <p class="mt-3 mb-1">
+                        <i class="fas fa-satellite-dish fa-spin mr-1 text-cyan"></i>
+                        Scanning <strong class="text-cyan">${ip}</strong>
+                    </p>
+                    <p class="text-muted detail-loading-subtitle" id="detail-progress-text">Initializing...</p>
+                </div>
+                <div class="detail-progress-steps">
+                    ${stepsHtml}
+                </div>
+                <div class="detail-progress-bar-wrap">
+                    <div class="detail-progress-bar" id="detail-progress-fill" style="width: 0%"></div>
+                </div>
             </div>`;
+    }
+
+    function updateDetailProgress(data) {
+        if (data.ip !== state.detailIp) return;
+        const phase = data.phase;       // 1-based
+        const total = data.total || 3;
+        const label = data.label || '';
+
+        // Update header subtitle
+        const subtitle = document.getElementById('detail-progress-text');
+        if (subtitle) subtitle.textContent = label;
+
+        // Update progress bar — interpolate within phase when sub_progress present
+        const fill = document.getElementById('detail-progress-fill');
+        if (fill) {
+            let pct = ((phase - 1) / total) * 100;
+            if (data.sub_progress !== undefined) {
+                pct += (data.sub_progress / 100) * (100 / total);
+            }
+            fill.style.width = Math.round(pct) + '%';
+        }
+
+        // Mark previous steps as complete
+        for (let i = 0; i < phase - 1; i++) {
+            const step = document.getElementById('detail-step-' + i);
+            if (step) {
+                step.querySelector('.detail-step-icon').className = 'detail-step-icon completed';
+                step.querySelector('.detail-step-icon i').className = 'fas fa-check';
+                step.querySelector('.detail-step-status').innerHTML = '<span class="text-green">Done</span>';
+            }
+        }
+
+        // Mark current step as active with optional port progress
+        const current = document.getElementById('detail-step-' + (phase - 1));
+        if (current) {
+            current.querySelector('.detail-step-icon').className = 'detail-step-icon active';
+            let statusHtml;
+            if (data.ports_done !== undefined) {
+                statusHtml = '<span class="text-cyan"><i class="fas fa-circle-notch fa-spin mr-1"></i>~' + data.ports_done + '/' + data.ports_total + ' ports</span>';
+            } else {
+                statusHtml = '<span class="text-cyan"><i class="fas fa-circle-notch fa-spin mr-1"></i>In progress...</span>';
+            }
+            current.querySelector('.detail-step-status').innerHTML = statusHtml;
+        }
     }
 
     function showDetailError(error) {
@@ -887,6 +973,17 @@
     }
 
     function renderQuickInfo(data) {
+        const stepsHtml = detailPhases.map((p, i) => `
+            <div class="detail-progress-step" id="detail-step-${i}" data-step="${i}">
+                <div class="detail-step-icon pending">
+                    <i class="fas ${p.icon}"></i>
+                </div>
+                <div class="detail-step-info">
+                    <div class="detail-step-label">${p.label}</div>
+                    <div class="detail-step-status text-muted">Waiting...</div>
+                </div>
+            </div>`).join('');
+
         dom.hostDetailBody().innerHTML = `
             <div class="detail-section">
                 <div class="detail-section-title">
@@ -913,9 +1010,16 @@
                     </div>
                 </div>
             </div>
-            <div class="text-center py-3">
-                <div class="scanner-animation" style="margin: 0 auto; width:40px; height:40px;"></div>
-                <p class="mt-2 text-muted" style="font-size:0.82rem;">Loading detailed scan data...</p>
+            <div class="detail-loading-container" style="padding-top: 0.5rem;">
+                <div class="detail-loading-header" style="padding-top: 0;">
+                    <p class="mb-1 text-muted detail-loading-subtitle" id="detail-progress-text">Running detailed scan...</p>
+                </div>
+                <div class="detail-progress-steps">
+                    ${stepsHtml}
+                </div>
+                <div class="detail-progress-bar-wrap">
+                    <div class="detail-progress-bar" id="detail-progress-fill" style="width: 0%"></div>
+                </div>
             </div>`;
     }
 
@@ -1626,6 +1730,7 @@
         setLiveUpdateEnabled(false);
 
         setStatus('Deep Scan 0/' + onlineIps.length, 'scanning');
+        dom.progressFill().style.width = '0%';
 
         const s = getSettings();
         state.socket.emit('batch_full_scan', {
@@ -1733,14 +1838,41 @@
         const changed = prev.alive !== data.alive || prev.response_time !== data.response_time;
         if (!changed) return;
 
-        // Update cached result
+        // Update cached result (only ping fields)
         prev.alive = data.alive;
         prev.response_time = data.response_time;
         if (data.hostname) prev.hostname = data.hostname;
 
-        // Refresh UI for this host
+        // Refresh grid block (only shows IP + online/offline)
         addOrUpdateGridBlock(prev);
-        addOrUpdateTableRow(prev);
+
+        // Update only the volatile table cells — preserve ports/OS/MAC from full scan
+        const ipKey = data.ip.replace(/\./g, '-');
+        const row = document.getElementById('row-' + ipKey);
+        if (row) {
+            row.dataset.alive = data.alive ? 'true' : 'false';
+            row.className = data.alive ? '' : 'text-muted';
+
+            const cells = row.querySelectorAll('td');
+            // Cell 0: status badge
+            if (cells[0]) {
+                cells[0].innerHTML = data.alive
+                    ? '<span class="status-badge online"><span class="dot"></span>Online</span>'
+                    : '<span class="status-badge offline"><span class="dot"></span>Offline</span>';
+            }
+            // Cell 3: response time
+            if (cells[3]) {
+                cells[3].innerHTML = data.response_time !== null
+                    ? '<span class="text-cyan font-weight-bold">' + data.response_time + ' ms</span>'
+                    : '<span class="text-muted">—</span>';
+            }
+            // Cell 2: hostname (only if we got a new one)
+            if (cells[2] && data.hostname) {
+                cells[2].textContent = data.hostname;
+            }
+
+            applyFilterToRow(row);
+        }
 
         // Recount stats
         const all = Object.values(state.results);
