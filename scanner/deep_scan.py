@@ -213,22 +213,6 @@ def get_arp_mac(ip):
     return None
 
 
-# -- TTL OS Guess -------------------------------------------------------------
-
-def get_ttl_os_guess(ttl):
-    """Guess OS family based on TTL value."""
-    if ttl is None:
-        return None
-    ttl = int(ttl)
-    if ttl <= 64:
-        return "Linux/Unix"
-    elif ttl <= 128:
-        return "Windows"
-    elif ttl <= 255:
-        return "Network Device"
-    return None
-
-
 # -- HTTP Probing -------------------------------------------------------------
 
 def get_http_info(ip, port=80, timeout=5):
@@ -417,35 +401,26 @@ def get_tcp_banners(ip, ports, timeout=3):
 
 def deep_scan_host(ip, open_ports=None, timeout=5, ssdp_info=None, arp_mac=None,
                    probe_http=True, probe_ssl=True, probe_banners=True,
-                   probe_mac_vendor=True):
+                   probe_mac_vendor=True, nmap_services=None):
     """
-    Run all deep scan probes on a single host.
+    Run all deep scan probes on a single host (parallelized).
 
-    Args:
-        ip:              Target IP address
-        open_ports:      List of known open ports from nmap
-        timeout:         Timeout per probe in seconds
-        ssdp_info:       Pre-gathered SSDP data for this IP (from ssdp_discover)
-        arp_mac:         Pre-gathered MAC from ARP table scan
-        probe_http:      Enable HTTP/HTTPS probing
-        probe_ssl:       Enable SSL/TLS certificate analysis
-        probe_banners:   Enable TCP banner grabbing
-        probe_mac_vendor: Enable MAC vendor (OUI) lookup
-
-    Returns:
-        dict with all gathered information
+    *nmap_services* is the ``services`` list from an nmap scan result.
+    When provided, any port that nmap identified as an HTTP or SSL
+    service is automatically added to the probe lists so that web
+    interfaces on non-standard ports are discovered.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     result = {"ip": ip}
 
     if open_ports is None:
         open_ports = []
 
-    # -- MAC / ARP lookup
+    # -- MAC / ARP lookup (fast, do inline)
     mac = arp_mac or get_arp_mac(ip)
     if mac:
         result["mac_from_arp"] = mac
-
-        # Vendor lookup via OUI database
         if probe_mac_vendor:
             vendor = get_mac_vendor(mac)
             if vendor:
@@ -455,41 +430,103 @@ def deep_scan_host(ip, open_ports=None, timeout=5, ssdp_info=None, arp_mac=None,
     if ssdp_info:
         result["ssdp_info"] = ssdp_info
 
-    # -- HTTP probe (only on ports known to be open)
-    if probe_http:
-        http_ports = [p for p in [80, 8080, 8000, 8888] if p in open_ports]
-        for port in http_ports:
-            info = get_http_info(ip, port, timeout)
-            if info.get("status_code"):
-                info["port"] = port
-                result["http_info"] = info
-                break
+    # -- Parallel network probes -----------------------------------------------
+    futures = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # HTTP probe
+        if probe_http:
+            # Always try common HTTP ports, even if nmap didn't find them
+            # (nmap can miss ports on hosts that block its discovery probes)
+            _COMMON_HTTP  = [80, 8080, 8000, 8888]
+            _COMMON_HTTPS = [443, 8443]
+            http_ports  = [p for p in _COMMON_HTTP  if p in open_ports]
+            https_ports = [p for p in _COMMON_HTTPS if p in open_ports]
 
-        # -- HTTPS probe (only on ports known to be open)
-        https_ports = [p for p in [443, 8443] if p in open_ports]
-        for port in https_ports:
-            info = get_http_info(ip, port, timeout)
-            if info.get("status_code"):
-                info["port"] = port
-                if "http_info" not in result:
-                    result["http_info"] = info
-                result["https_info"] = info
-                break
+            # If nmap found nothing, still try the common ports
+            if not http_ports and not https_ports and not open_ports:
+                http_ports  = list(_COMMON_HTTP)
+                https_ports = list(_COMMON_HTTPS)
 
-    # -- SSL certificate (only on ports known to be open)
-    if probe_ssl:
-        ssl_ports = [p for p in [443, 8443] if p in open_ports]
-        for port in ssl_ports:
-            ssl_info = get_ssl_cert_info(ip, port, timeout)
-            if ssl_info.get("ssl_version"):
-                ssl_info["port"] = port
-                result["ssl_info"] = ssl_info
-                break
+            # Expand with ports where nmap detected HTTP/HTTPS services
+            if nmap_services:
+                for svc in nmap_services:
+                    if svc.get("state") != "open":
+                        continue
+                    port = svc.get("port")
+                    svc_name = (svc.get("service") or "").lower()
+                    product = (svc.get("product") or "").lower()
+                    if "http" in svc_name or "http" in product or "www" in svc_name:
+                        is_ssl = ("ssl" in svc_name or "https" in svc_name
+                                  or port in (443, 8443))
+                        if is_ssl and port not in https_ports:
+                            https_ports.append(port)
+                        elif not is_ssl and port not in http_ports:
+                            http_ports.append(port)
 
-    # -- TCP banners from known open ports
-    if probe_banners and open_ports:
-        banners = get_tcp_banners(ip, open_ports, timeout=min(timeout, 3))
-        if banners:
-            result["banners"] = banners
+            def _probe_http():
+                res = {}
+                for port in http_ports:
+                    info = get_http_info(ip, port, timeout)
+                    if info.get("status_code"):
+                        info["port"] = port
+                        res["http_info"] = info
+                        break
+                for port in https_ports:
+                    info = get_http_info(ip, port, timeout)
+                    if info.get("status_code"):
+                        info["port"] = port
+                        if "http_info" not in res:
+                            res["http_info"] = info
+                        res["https_info"] = info
+                        break
+                return res
+
+            futures[pool.submit(_probe_http)] = "http"
+
+        # SSL certificate
+        if probe_ssl:
+            ssl_ports = [p for p in [443, 8443] if p in open_ports]
+
+            # If nmap found nothing, still try common SSL ports
+            if not ssl_ports and not open_ports:
+                ssl_ports = [443, 8443]
+
+            # Expand with nmap-detected SSL/TLS services
+            if nmap_services:
+                for svc in nmap_services:
+                    if svc.get("state") != "open":
+                        continue
+                    port = svc.get("port")
+                    svc_name = (svc.get("service") or "").lower()
+                    if ("ssl" in svc_name or "https" in svc_name
+                            or "tls" in svc_name) and port not in ssl_ports:
+                        ssl_ports.append(port)
+
+            def _probe_ssl():
+                for port in ssl_ports:
+                    ssl_info = get_ssl_cert_info(ip, port, timeout)
+                    if ssl_info.get("ssl_version"):
+                        ssl_info["port"] = port
+                        return {"ssl_info": ssl_info}
+                return {}
+
+            futures[pool.submit(_probe_ssl)] = "ssl"
+
+        # TCP banners
+        if probe_banners:
+            # If nmap found ports, grab banners from those.
+            # If nmap found nothing, try the most common banner ports.
+            banner_ports = open_ports if open_ports else [22, 21, 25, 80, 443, 3389, 8080]
+            def _probe_banners():
+                banners = get_tcp_banners(ip, banner_ports, timeout=min(timeout, 3))
+                return {"banners": banners} if banners else {}
+
+            futures[pool.submit(_probe_banners)] = "banners"
+
+        for future in as_completed(futures):
+            try:
+                result.update(future.result())
+            except Exception:
+                pass
 
     return result

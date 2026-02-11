@@ -6,6 +6,7 @@ import socket
 import subprocess
 import platform
 import re
+import shutil
 
 import dns.resolver
 import dns.reversename
@@ -87,13 +88,16 @@ def get_whois_info(ip: str) -> dict:
     """Get basic WHOIS information (cross-platform)."""
     info = {"whois": None}
 
+    # Skip if whois command is not available
+    if not shutil.which("whois"):
+        return info
+
     try:
-        cmd = ["whois", ip]
         result = subprocess.run(
-            cmd,
+            ["whois", ip],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=10,
+            timeout=5,
             **_SUBPROCESS_FLAGS,
         )
         if result.returncode == 0:
@@ -150,10 +154,23 @@ def get_arp_info(ip: str) -> dict:
 
 
 def get_full_host_info(ip: str) -> dict:
-    """Gather all available information about a host."""
+    """Gather all available information about a host (parallelized)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     info = {"ip": ip}
-    info.update(get_dns_info(ip))
-    info.update(get_netbios_info(ip))
-    info.update(get_arp_info(ip))
-    info.update(get_whois_info(ip))
+    tasks = {
+        "dns": get_dns_info,
+        "netbios": get_netbios_info,
+        "arp": get_arp_info,
+        "whois": get_whois_info,
+    }
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(fn, ip): name for name, fn in tasks.items()}
+        for future in as_completed(futures):
+            try:
+                info.update(future.result())
+            except Exception:
+                pass
+
     return info

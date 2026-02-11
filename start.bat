@@ -62,6 +62,21 @@ echo  [OK] All dependencies installed.
 echo.
 
 :: ── Start server ──────────────────────────────────────────────────
+
+:: Kill existing server on port 5000 if running
+set "KILLED="
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":5000 " ^| findstr "LISTENING"') do (
+    if not defined KILLED (
+        echo  [*] Port 5000 in use — stopping existing server (PID %%p)...
+        taskkill /PID %%p /F >nul 2>&1
+        set "KILLED=1"
+        timeout /t 1 /nobreak >nul
+    )
+)
+if defined KILLED (
+    echo  [OK] Previous server stopped.
+)
+
 echo  ----------------------------------------
 echo   Starting Subnet Scanner...
 echo   URL:  http://localhost:5000

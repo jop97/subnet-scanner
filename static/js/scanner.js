@@ -1,5 +1,5 @@
 /**
- * Subnet Scanner v1.1.2 — Frontend Controller
+ * Subnet Scanner v1.1.7 — Frontend Controller
  * Handles WebSocket communication, UI updates, grid/list views, and host detail modals.
  */
 
@@ -16,6 +16,9 @@
         currentView: 'grid',
         dataTable: null,
         detailIp: null,
+        detailScanId: 0,       // monotonic ID to discard stale detail results
+        detailTimeout: null,   // client-side timeout for detail scan
+        detailTimeoutSeconds: 180,  // current detail scan timeout setting
         liveUpdate: false,
         liveTimeout: null,
         scanCompleted: false,  // true after first scan is done
@@ -73,7 +76,7 @@
         1194: 'OpenVPN', 1701: 'L2TP', 5222: 'XMPP', 5269: 'XMPP',
         6660: 'IRC', 6667: 'IRC', 6697: 'IRC-TLS',
         8000: 'HTTP-Alt', 8081: 'HTTP-Alt', 8008: 'HTTP-Alt',
-        8443: 'HTTPS-Alt', 9000: 'HTTP-Alt', 9443: 'HTTPS-Alt',
+        9000: 'HTTP-Alt', 9443: 'HTTPS-Alt',
         50000: 'SAP', 50070: 'HDFS', 27018: 'MongoDB', 27019: 'MongoDB',
     };
 
@@ -109,29 +112,76 @@
     const SETTINGS_KEY = 'subnetScannerSettings';
 
     const SETTINGS_DEFAULTS = {
+        // Scan Profile
+        profile:            'normal',
         // Quick Sweep
-        pingTimeout:    1000,
-        threads:        50,
-        // Full Scan
-        nmapArgs:       '-sV --top-ports 20 -T4',
-        nmapTopPorts:   '20',
-        deepTimeout:    5,
-        ssdpTimeout:    4,
-        deepHttp:       true,
-        deepSsl:        true,
-        deepBanners:    true,
-        deepSsdp:       true,
-        deepMacVendor:  true,
+        pingTimeout:        1000,
+        threads:            50,
+        sweepPingCount:     1,
+        // Full Scan (Table)
+        nmapTopPorts:       '20',
+        nmapTiming:         'T4',
+        // Detail Modal
+        detailTopPorts:     '2500',
+        detailTimeout:      180,
+        // Deep Probes
+        deepTimeout:        5,
+        ssdpTimeout:        4,
+        deepHttp:           true,
+        deepSsl:            false,
+        deepBanners:        false,
+        deepSsdp:           false,
+        deepMacVendor:      true,
         // Display
-        autoScroll:     true,
-        showOffline:    true,
-        animations:     true,
+        autoScroll:         true,
+        showOffline:        true,
+        animations:         true,
         // Notifications
-        toasts:         true,
-        sounds:         false,
+        toasts:             true,
+        sounds:             false,
         // Live Update
-        liveInterval:   '60',
-        livePingCount:  2,
+        liveInterval:       '60',
+        livePingCount:      2,
+    };
+
+    // Profile presets
+    const PROFILES = {
+        fast: {
+            pingTimeout:        500,
+            threads:            100,
+            sweepPingCount:     1,
+            nmapTopPorts:       '20',
+            nmapTiming:         'T5',
+            detailTopPorts:     '1000',
+            detailTimeout:      120,
+            deepTimeout:        3,
+            ssdpTimeout:        2,
+            description:        'Fastest scanning — may miss slow hosts or ports.',
+        },
+        normal: {
+            pingTimeout:        1000,
+            threads:            50,
+            sweepPingCount:     1,
+            nmapTopPorts:       '20',
+            nmapTiming:         'T4',
+            detailTopPorts:     '2500',
+            detailTimeout:      180,
+            deepTimeout:        5,
+            ssdpTimeout:        4,
+            description:        'Balanced speed and coverage for typical networks.',
+        },
+        thorough: {
+            pingTimeout:        2000,
+            threads:            25,
+            sweepPingCount:     2,
+            nmapTopPorts:       '100',
+            nmapTiming:         'T3',
+            detailTopPorts:     '5000',
+            detailTimeout:      300,
+            deepTimeout:        8,
+            ssdpTimeout:        6,
+            description:        'Slow but thorough — best for unreliable networks.',
+        },
     };
 
     /** Read settings from localStorage or return defaults. */
@@ -152,51 +202,103 @@
 
     /** Gather all setting values from the DOM inputs. */
     function readSettingsFromUI() {
+        const activeProfile = document.querySelector('.profile-btn.active');
         return {
-            pingTimeout:    parseInt(document.getElementById('settingTimeout').value, 10) || SETTINGS_DEFAULTS.pingTimeout,
-            threads:        parseInt(document.getElementById('settingThreads').value, 10) || SETTINGS_DEFAULTS.threads,
-            nmapArgs:       document.getElementById('settingNmapArgs').value.trim() || SETTINGS_DEFAULTS.nmapArgs,
-            nmapTopPorts:   document.getElementById('settingNmapTopPorts').value,
-            deepTimeout:    parseInt(document.getElementById('settingDeepTimeout').value, 10) || SETTINGS_DEFAULTS.deepTimeout,
-            ssdpTimeout:    parseInt(document.getElementById('settingSsdpTimeout').value, 10) || SETTINGS_DEFAULTS.ssdpTimeout,
-            deepHttp:       document.getElementById('settingDeepHttp').checked,
-            deepSsl:        document.getElementById('settingDeepSsl').checked,
-            deepBanners:    document.getElementById('settingDeepBanners').checked,
-            deepSsdp:       document.getElementById('settingDeepSsdp').checked,
-            deepMacVendor:  document.getElementById('settingDeepMacVendor').checked,
-            autoScroll:     document.getElementById('settingAutoScroll').checked,
-            showOffline:    document.getElementById('settingShowOffline').checked,
-            animations:     document.getElementById('settingAnimations').checked,
-            toasts:         document.getElementById('settingToasts').checked,
-            sounds:         document.getElementById('settingSounds').checked,
-            liveInterval:   document.getElementById('settingLiveInterval').value,
-            livePingCount:  parseInt(document.getElementById('settingLivePingCount').value, 10) || SETTINGS_DEFAULTS.livePingCount,
+            profile:            activeProfile ? activeProfile.dataset.profile : 'normal',
+            pingTimeout:        parseInt(document.getElementById('settingTimeout').value, 10) || SETTINGS_DEFAULTS.pingTimeout,
+            threads:            parseInt(document.getElementById('settingThreads').value, 10) || SETTINGS_DEFAULTS.threads,
+            sweepPingCount:     parseInt(document.getElementById('settingSweepPingCount').value, 10) || SETTINGS_DEFAULTS.sweepPingCount,
+            nmapTopPorts:       document.getElementById('settingNmapTopPorts').value,
+            nmapTiming:         document.getElementById('settingNmapTiming').value,
+            detailTopPorts:     document.getElementById('settingDetailTopPorts').value,
+            detailTimeout:      parseInt(document.getElementById('settingDetailTimeout').value, 10) || SETTINGS_DEFAULTS.detailTimeout,
+            deepTimeout:        parseInt(document.getElementById('settingDeepTimeout').value, 10) || SETTINGS_DEFAULTS.deepTimeout,
+            ssdpTimeout:        parseInt(document.getElementById('settingSsdpTimeout').value, 10) || SETTINGS_DEFAULTS.ssdpTimeout,
+            deepHttp:           document.getElementById('settingDeepHttp').checked,
+            deepSsl:            document.getElementById('settingDeepSsl').checked,
+            deepBanners:        document.getElementById('settingDeepBanners').checked,
+            deepSsdp:           document.getElementById('settingDeepSsdp').checked,
+            deepMacVendor:      document.getElementById('settingDeepMacVendor').checked,
+            autoScroll:         document.getElementById('settingAutoScroll').checked,
+            showOffline:        document.getElementById('settingShowOffline').checked,
+            animations:         document.getElementById('settingAnimations').checked,
+            toasts:             document.getElementById('settingToasts').checked,
+            sounds:             document.getElementById('settingSounds').checked,
+            liveInterval:       document.getElementById('settingLiveInterval').value,
+            livePingCount:      parseInt(document.getElementById('settingLivePingCount').value, 10) || SETTINGS_DEFAULTS.livePingCount,
         };
     }
 
     /** Apply a settings object to all DOM inputs. */
     function applySettingsToUI(s) {
-        document.getElementById('settingTimeout').value       = s.pingTimeout;
-        document.getElementById('settingThreads').value       = s.threads;
-        document.getElementById('settingNmapArgs').value      = s.nmapArgs;
-        document.getElementById('settingNmapTopPorts').value  = s.nmapTopPorts;
-        document.getElementById('settingDeepTimeout').value   = s.deepTimeout;
-        document.getElementById('settingSsdpTimeout').value   = s.ssdpTimeout;
-        document.getElementById('settingDeepHttp').checked    = s.deepHttp;
-        document.getElementById('settingDeepSsl').checked     = s.deepSsl;
-        document.getElementById('settingDeepBanners').checked = s.deepBanners;
-        document.getElementById('settingDeepSsdp').checked    = s.deepSsdp;
+        // Profile buttons
+        document.querySelectorAll('.profile-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.profile === s.profile);
+        });
+        updateProfileDescription(s.profile);
+
+        document.getElementById('settingTimeout').value         = s.pingTimeout;
+        document.getElementById('settingThreads').value         = s.threads;
+        document.getElementById('settingSweepPingCount').value  = s.sweepPingCount;
+        document.getElementById('settingNmapTopPorts').value    = s.nmapTopPorts;
+        document.getElementById('settingNmapTiming').value      = s.nmapTiming;
+        document.getElementById('settingDetailTopPorts').value  = s.detailTopPorts;
+        document.getElementById('settingDetailTimeout').value   = s.detailTimeout;
+        document.getElementById('settingDeepTimeout').value     = s.deepTimeout;
+        document.getElementById('settingSsdpTimeout').value     = s.ssdpTimeout;
+        document.getElementById('settingDeepHttp').checked      = s.deepHttp;
+        document.getElementById('settingDeepSsl').checked       = s.deepSsl;
+        document.getElementById('settingDeepBanners').checked   = s.deepBanners;
+        document.getElementById('settingDeepSsdp').checked      = s.deepSsdp;
         document.getElementById('settingDeepMacVendor').checked = s.deepMacVendor;
-        document.getElementById('settingAutoScroll').checked  = s.autoScroll;
-        document.getElementById('settingShowOffline').checked = s.showOffline;
-        document.getElementById('settingAnimations').checked  = s.animations;
-        document.getElementById('settingToasts').checked      = s.toasts;
-        document.getElementById('settingSounds').checked      = s.sounds;
-        document.getElementById('settingLiveInterval').value  = s.liveInterval;
-        document.getElementById('settingLivePingCount').value = s.livePingCount;
+        document.getElementById('settingAutoScroll').checked    = s.autoScroll;
+        document.getElementById('settingShowOffline').checked   = s.showOffline;
+        document.getElementById('settingAnimations').checked    = s.animations;
+        document.getElementById('settingToasts').checked        = s.toasts;
+        document.getElementById('settingSounds').checked        = s.sounds;
+        document.getElementById('settingLiveInterval').value    = s.liveInterval;
+        document.getElementById('settingLivePingCount').value   = s.livePingCount;
 
         // Apply display effects immediately
         applyDisplaySettings(s);
+    }
+
+    /** Update profile description text. */
+    function updateProfileDescription(profileName) {
+        const desc = document.getElementById('profileDescription');
+        if (desc && PROFILES[profileName]) {
+            desc.textContent = PROFILES[profileName].description;
+        }
+    }
+
+    /** Apply a profile preset to the UI. */
+    function applyProfile(profileName) {
+        const preset = PROFILES[profileName];
+        if (!preset) return;
+
+        // Update profile buttons
+        document.querySelectorAll('.profile-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.profile === profileName);
+        });
+        updateProfileDescription(profileName);
+
+        // Apply preset values
+        document.getElementById('settingTimeout').value         = preset.pingTimeout;
+        document.getElementById('settingThreads').value         = preset.threads;
+        document.getElementById('settingSweepPingCount').value  = preset.sweepPingCount;
+        document.getElementById('settingNmapTopPorts').value    = preset.nmapTopPorts;
+        document.getElementById('settingNmapTiming').value      = preset.nmapTiming;
+        document.getElementById('settingDetailTopPorts').value  = preset.detailTopPorts;
+        document.getElementById('settingDetailTimeout').value   = preset.detailTimeout;
+        document.getElementById('settingDeepTimeout').value     = preset.deepTimeout;
+        document.getElementById('settingSsdpTimeout').value     = preset.ssdpTimeout;
+
+        saveSettings();
+    }
+
+    /** Build nmap arguments string for batch full scan. */
+    function buildNmapArgs(s) {
+        return `-sV --top-ports ${s.nmapTopPorts} ${s.nmapTiming}`;
     }
 
     /** Apply display-related settings (animations, showOffline). */
@@ -266,14 +368,21 @@
         });
 
         state.socket.on('host_detail_progress', (data) => {
+            if (data.ip !== state.detailIp) return;
+            // Reset client-side timeout on any progress event
+            resetDetailTimeout();
             updateDetailProgress(data);
         });
 
         state.socket.on('host_detail_result', (data) => {
+            clearDetailTimeout();
+            if (data.ip !== state.detailIp) return;  // Stale result
             renderHostDetail(data);
         });
 
         state.socket.on('host_detail_error', (data) => {
+            clearDetailTimeout();
+            if (data.ip && data.ip !== state.detailIp) return;  // Stale error
             showDetailError(data.error);
         });
 
@@ -406,6 +515,11 @@
         // Full Scan button (next to Start Scan)
         dom.btnFullScanMain().addEventListener('click', startFullScan);
 
+        // Clear detail timeout when modal is closed
+        $('#hostDetailModal').on('hidden.bs.modal', function () {
+            clearDetailTimeout();
+        });
+
         // Keyboard shortcut
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.ctrlKey) {
@@ -436,16 +550,12 @@
                     applyDisplaySettings(readSettingsFromUI());
                 });
             });
-        }
 
-        // Nmap Top Ports selector syncs with Nmap Arguments field
-        const topPortsSelect = document.getElementById('settingNmapTopPorts');
-        if (topPortsSelect) {
-            topPortsSelect.addEventListener('change', () => {
-                const argsInput = document.getElementById('settingNmapArgs');
-                const ports = topPortsSelect.value;
-                argsInput.value = argsInput.value.replace(/--top-ports\s+\d+/, '--top-ports ' + ports);
-                saveSettings();
+            // Profile buttons
+            settingsModal.querySelectorAll('.profile-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    applyProfile(btn.dataset.profile);
+                });
             });
         }
 
@@ -864,6 +974,7 @@
     // ── Host Detail Modal ───────────────────────────────────────────────────
     function openHostDetail(ip) {
         state.detailIp = ip;
+        state.detailScanId++;
         dom.hostDetailTitle().innerHTML = `<i class="fas fa-info-circle mr-2"></i>${ip}`;
 
         // Show basic info from cached results first
@@ -880,16 +991,62 @@
 
     function requestHostDetail(ip, scanType) {
         showDetailLoading(ip);
-        state.socket.emit('scan_host_detail', { ip: ip, scan_type: scanType });
+        clearDetailTimeout();
+        const s = getSettings();
+        const hostTimeout = s.detailTimeout || 180;
+        state.detailTimeoutSeconds = hostTimeout;  // Store for progress resets
+        state.socket.emit('scan_host_detail', {
+            ip: ip,
+            scan_type: scanType,
+            top_ports: parseInt(s.detailTopPorts, 10) || 2500,
+            host_timeout: hostTimeout,
+            deep_timeout: s.deepTimeout,
+            ssdp_timeout: s.ssdpTimeout,
+            deep_http: s.deepHttp,
+            deep_ssl: s.deepSsl,
+            deep_banners: s.deepBanners,
+            deep_ssdp: s.deepSsdp,
+            deep_mac_vendor: s.deepMacVendor,
+        });
+        // Start client-side timeout based on settings
+        resetDetailTimeout();
     }
 
-    const detailPhases = [
-        { icon: 'fa-network-wired', label: 'DNS, NetBIOS & WHOIS' },
-        { icon: 'fa-search',        label: 'Nmap scan (top 1000 ports)' },
-        { icon: 'fa-shield-alt',    label: 'HTTP, SSL & banner probes' }
-    ];
+    /** Reset the client-side detail scan timeout (called on every progress event). */
+    function resetDetailTimeout() {
+        clearDetailTimeout();
+        const seconds = state.detailTimeoutSeconds || 180;
+        const ms = (seconds + 60) * 1000;  // Add 60s buffer beyond host-timeout
+        state.detailTimeout = setTimeout(() => {
+            // Only fire if we're still showing the loading state
+            const body = dom.hostDetailBody();
+            if (body && body.querySelector('.detail-loading-container')) {
+                showDetailError('Scan timed out — the server stopped responding. Try again or scan a different host.');
+            }
+        }, ms);
+    }
+
+    /** Clear the client-side detail scan timeout. */
+    function clearDetailTimeout() {
+        if (state.detailTimeout) {
+            clearTimeout(state.detailTimeout);
+            state.detailTimeout = null;
+        }
+    }
+
+    /** Get detail phase labels (port count from settings). */
+    function getDetailPhases() {
+        const s = getSettings();
+        const topPorts = s.detailTopPorts || 2500;
+        return [
+            { icon: 'fa-network-wired', label: 'DNS, NetBIOS & WHOIS' },
+            { icon: 'fa-search',        label: `Nmap scan (top ${topPorts} ports)` },
+            { icon: 'fa-shield-alt',    label: 'HTTP, SSL & banner probes' }
+        ];
+    }
 
     function showDetailLoading(ip) {
+        const detailPhases = getDetailPhases();
         const stepsHtml = detailPhases.map((p, i) => `
             <div class="detail-progress-step" id="detail-step-${i}" data-step="${i}">
                 <div class="detail-step-icon pending">
@@ -973,6 +1130,7 @@
     }
 
     function renderQuickInfo(data) {
+        const detailPhases = getDetailPhases();
         const stepsHtml = detailPhases.map((p, i) => `
             <div class="detail-progress-step" id="detail-step-${i}" data-step="${i}">
                 <div class="detail-step-icon pending">
@@ -1735,7 +1893,7 @@
         const s = getSettings();
         state.socket.emit('batch_full_scan', {
             ips: onlineIps,
-            nmap_args:      s.nmapArgs,
+            nmap_args:      buildNmapArgs(s),
             deep_timeout:   s.deepTimeout,
             ssdp_timeout:   s.ssdpTimeout,
             deep_http:      s.deepHttp,

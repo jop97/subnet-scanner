@@ -1128,6 +1128,51 @@ select.form-input {
 }
 .settings-section:last-child { margin-bottom: 0; }
 
+/* Profile Selector */
+.profile-selector {
+    display: flex;
+    gap: 10px;
+}
+
+.profile-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 14px 12px;
+    background: var(--bg-inset);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-dim);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--speed) var(--ease);
+}
+
+.profile-btn i {
+    font-size: 1.25rem;
+}
+
+.profile-btn:hover {
+    border-color: var(--cyan);
+    color: var(--text);
+    background: rgba(34, 211, 238, 0.06);
+}
+
+.profile-btn.active {
+    border-color: var(--cyan);
+    background: rgba(34, 211, 238, 0.12);
+    color: var(--cyan);
+    box-shadow: 0 0 12px rgba(34, 211, 238, 0.2);
+}
+
+.profile-btn.active i {
+    color: var(--cyan);
+}
+
 .settings-heading {
     font-size: 0.68rem;
     font-weight: 700;

@@ -19,7 +19,7 @@
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap4.min.css">
 
     <!-- Custom Theme -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}?v=14">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}?v=19">
 
     {% block extra_css %}{% endblock %}
 </head>
@@ -30,7 +30,7 @@
         <a class="nav-brand" href="/">
             <span class="brand-icon"><i class="fas fa-network-wired"></i></span>
             <span class="brand-name">SubnetScanner</span>
-            <span class="brand-tag">v1.1.2</span>
+            <span class="brand-tag">v1.1.7</span>
         </a>
         <div class="nav-actions">
             <span class="nav-conn">
@@ -53,13 +53,13 @@
 
     <!-- ── Footer ──────────────────────────────────────────────────────── -->
     <footer class="app-footer">
-        <span>&copy; 2026 Subnet Scanner v1.1.2</span>
+        <span>&copy; 2026 Subnet Scanner v1.1.7</span>
         <span>Flask &middot; Nmap &middot; Socket.IO &middot; Deep Scan &middot; WHOIS</span>
     </footer>
 
     <!-- ── Settings Modal ──────────────────────────────────────────────── -->
     <div class="modal fade" id="settingsModal" tabindex="-1" role="dialog">
-        <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable" role="document">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title"><i class="fas fa-cog mr-2"></i>Settings</h5>
@@ -69,7 +69,27 @@
                 </div>
                 <div class="modal-body">
 
-                    <!-- Scan Options -->
+                    <!-- Scan Profile -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-tachometer-alt mr-2"></i>Scan Profile</h6>
+                        <div class="profile-selector">
+                            <button type="button" class="profile-btn" data-profile="fast" title="500ms timeout, 1 ping, top 20 ports">
+                                <i class="fas fa-bolt"></i>
+                                <span>Fast</span>
+                            </button>
+                            <button type="button" class="profile-btn active" data-profile="normal" title="1000ms timeout, 1 ping, balanced">
+                                <i class="fas fa-balance-scale"></i>
+                                <span>Normal</span>
+                            </button>
+                            <button type="button" class="profile-btn" data-profile="thorough" title="2000ms timeout, 2 pings, more ports">
+                                <i class="fas fa-microscope"></i>
+                                <span>Thorough</span>
+                            </button>
+                        </div>
+                        <small class="text-muted d-block mt-2" id="profileDescription">Balanced speed and coverage for typical networks.</small>
+                    </div>
+
+                    <!-- Quick Sweep -->
                     <div class="settings-section">
                         <h6 class="settings-heading"><i class="fas fa-satellite-dish mr-2"></i>Quick Sweep</h6>
                         <div class="setting-row">
@@ -80,32 +100,69 @@
                         <div class="setting-row">
                             <label for="settingThreads">Concurrent Threads</label>
                             <input type="number" class="form-input sm" id="settingThreads" value="50" min="1" max="500">
-                            <small>Number of parallel scan threads</small>
+                            <small>Number of parallel ping threads</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingSweepPingCount">Pings per Host</label>
+                            <input type="number" class="form-input sm" id="settingSweepPingCount" value="1" min="1" max="5" step="1">
+                            <small>Number of ICMP pings during sweep (1 = fastest)</small>
                         </div>
                     </div>
 
-                    <!-- Deep Scan / Full Scan -->
+                    <!-- Full Scan (Table) -->
                     <div class="settings-section">
-                        <h6 class="settings-heading"><i class="fas fa-crosshairs mr-2"></i>Full Scan</h6>
+                        <h6 class="settings-heading"><i class="fas fa-table mr-2"></i>Full Scan (Table)</h6>
+                        <small class="text-muted d-block mb-2">Settings for batch scanning all online hosts to populate the table.</small>
                         <div class="setting-row">
-                            <label for="settingNmapArgs">Nmap Arguments</label>
-                            <input type="text" class="form-input sm" id="settingNmapArgs" value="-sV --top-ports 20 -T4" placeholder="-sV --top-ports 20 -T4">
-                            <small>Flags for per-host Nmap scan</small>
-                        </div>
-                        <div class="setting-row">
-                            <label for="settingNmapTopPorts">Nmap Top Ports</label>
+                            <label for="settingNmapTopPorts">Top Ports per Host</label>
                             <select class="form-input sm" id="settingNmapTopPorts">
                                 <option value="20" selected>20 (fast)</option>
                                 <option value="100">100</option>
                                 <option value="500">500</option>
                                 <option value="1000">1000 (thorough)</option>
                             </select>
-                            <small>Number of top ports to scan per host</small>
+                            <small>More ports = slower but more complete</small>
                         </div>
+                        <div class="setting-row">
+                            <label for="settingNmapTiming">Nmap Timing</label>
+                            <select class="form-input sm" id="settingNmapTiming">
+                                <option value="T3">T3 (Polite)</option>
+                                <option value="T4" selected>T4 (Aggressive)</option>
+                                <option value="T5">T5 (Insane)</option>
+                            </select>
+                            <small>Higher = faster but may miss ports</small>
+                        </div>
+                    </div>
+
+                    <!-- Detail Modal -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-info-circle mr-2"></i>Detail Modal</h6>
+                        <small class="text-muted d-block mb-2">Settings for the in-depth scan when opening a host's detail view.</small>
+                        <div class="setting-row">
+                            <label for="settingDetailTopPorts">Top Ports</label>
+                            <select class="form-input sm" id="settingDetailTopPorts">
+                                <option value="1000">1000</option>
+                                <option value="2500" selected>2500 (recommended)</option>
+                                <option value="5000">5000</option>
+                                <option value="10000">10000 (slow)</option>
+                            </select>
+                            <small>Number of top ports for the detail scan</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingDetailTimeout">Host Timeout (s)</label>
+                            <input type="number" class="form-input sm" id="settingDetailTimeout" value="180" min="60" max="600" step="30">
+                            <small>Max time for nmap to scan a single host</small>
+                        </div>
+                    </div>
+
+                    <!-- Deep Probes -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-flask mr-2"></i>Deep Probes</h6>
+                        <small class="text-muted d-block mb-2">Additional probes run after nmap (HTTP, SSL, banners, etc.)</small>
                         <div class="setting-row">
                             <label for="settingDeepTimeout">Probe Timeout (s)</label>
                             <input type="number" class="form-input sm" id="settingDeepTimeout" value="5" min="1" max="30" step="1">
-                            <small>Timeout per deep probe (HTTP, SSL, banner)</small>
+                            <small>Timeout per probe (HTTP, SSL, banner)</small>
                         </div>
                         <div class="setting-row">
                             <label for="settingSsdpTimeout">SSDP Timeout (s)</label>
@@ -118,17 +175,17 @@
                             HTTP/HTTPS probing
                         </label>
                         <label class="toggle-row">
-                            <input type="checkbox" id="settingDeepSsl" checked>
+                            <input type="checkbox" id="settingDeepSsl">
                             <span class="toggle-switch"></span>
                             SSL/TLS certificate analysis
                         </label>
                         <label class="toggle-row">
-                            <input type="checkbox" id="settingDeepBanners" checked>
+                            <input type="checkbox" id="settingDeepBanners">
                             <span class="toggle-switch"></span>
                             TCP banner grabbing
                         </label>
                         <label class="toggle-row">
-                            <input type="checkbox" id="settingDeepSsdp" checked>
+                            <input type="checkbox" id="settingDeepSsdp">
                             <span class="toggle-switch"></span>
                             SSDP / UPnP discovery
                         </label>
@@ -186,12 +243,12 @@
                                 <option value="300">5 minutes</option>
                                 <option value="600">10 minutes</option>
                             </select>
-                            <small>Wait time after each completed ping round</small>
+                            <small>Wait time between ping rounds</small>
                         </div>
                         <div class="setting-row">
                             <label for="settingLivePingCount">Pings per Host</label>
                             <input type="number" class="form-input sm" id="settingLivePingCount" value="2" min="1" max="5" step="1">
-                            <small>More pings = more reliable, but slower</small>
+                            <small>More pings = more reliable status</small>
                         </div>
                     </div>
 

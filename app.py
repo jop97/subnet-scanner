@@ -1,16 +1,18 @@
 """
-Subnet Scanner v1.1.2 — Flask Application
+Subnet Scanner v1.1.7 — Flask Application
 A modern network scanning web application.
 """
 
 import ipaddress
+import time
+import threading
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 from config import Config
 from scanner.ping_sweep import ping_sweep, _ping_host
 from scanner.nmap_scanner import scan_host, quick_scan, full_scan, full_scan_with_progress
 from scanner.host_info import get_full_host_info
-from scanner.deep_scan import deep_scan_host, get_arp_table_full, get_mac_vendor
+from scanner.deep_scan import deep_scan_host, get_arp_table_full, get_mac_vendor, ssdp_discover
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -54,6 +56,9 @@ def scan_single_host(ip):
         result = quick_scan(ip)
     else:
         if nmap_args:
+            # Inject -Pn if not already present
+            if "-Pn" not in nmap_args and "-pn" not in nmap_args.lower():
+                nmap_args = "-Pn " + nmap_args
             result = scan_host(ip, arguments=nmap_args)
         else:
             result = scan_host(ip)
@@ -89,6 +94,11 @@ def handle_start_scan(data):
 
     active_scans[scan_id] = True
     scan_results[scan_id] = []
+
+    # Clean up results from previous scans to prevent memory growth
+    stale = [k for k in scan_results if k != scan_id]
+    for k in stale:
+        del scan_results[k]
 
     def run_scan():
         try:
@@ -147,9 +157,23 @@ def handle_scan_host_detail(data):
         emit("host_detail_error", {"error": "No IP provided"})
         return
 
+    # Extract settings from client (with sensible defaults)
+    top_ports = data.get("top_ports", 2500)
+    host_timeout = data.get("host_timeout", 180)
+    deep_timeout = data.get("deep_timeout", 5)
+    ssdp_timeout = data.get("ssdp_timeout", 4)
+    deep_http = data.get("deep_http", True)
+    deep_ssl = data.get("deep_ssl", True)
+    deep_banners = data.get("deep_banners", True)
+    deep_ssdp = data.get("deep_ssdp", True)
+    deep_mac_vendor = data.get("deep_mac_vendor", True)
+
     emit("host_detail_scanning", {"ip": ip})
 
     def run_detail_scan():
+        scan_active = threading.Event()
+        scan_active.set()
+
         try:
             # Phase 1: Host info (DNS, NetBIOS, ARP, WHOIS)
             socketio.emit("host_detail_progress", {
@@ -161,38 +185,94 @@ def handle_scan_host_detail(data):
             # Phase 2: Nmap full scan
             socketio.emit("host_detail_progress", {
                 "ip": ip, "phase": 2, "total": 3,
-                "label": "Running Nmap scan (top 1000 ports)..."
+                "label": f"Running Nmap scan (top {top_ports} ports)..."
             })
 
+            last_nmap_update = [time.time()]
+
             def nmap_progress(pct):
-                ports_est = round(pct / 100 * 1000)
+                last_nmap_update[0] = time.time()
+                ports_est = round(pct / 100 * top_ports)
                 socketio.emit("host_detail_progress", {
                     "ip": ip, "phase": 2, "total": 3,
-                    "label": f"Nmap scan — ~{ports_est}/1000 ports...",
+                    "label": f"Nmap scan — ~{ports_est}/{top_ports} ports...",
                     "sub_progress": pct,
                     "ports_done": ports_est,
-                    "ports_total": 1000,
+                    "ports_total": top_ports,
                 })
 
-            nmap_result = full_scan_with_progress(ip, progress_callback=nmap_progress)
+            # Heartbeat: emit periodic updates so the frontend knows we're alive
+            # (nmap doesn't always print progress early in the scan)
+            def _heartbeat():
+                phase_start = time.time()
+                while scan_active.is_set():
+                    scan_active.wait(timeout=5)
+                    if not scan_active.is_set():
+                        break
+                    # Only emit when nmap hasn't reported recently
+                    if time.time() - last_nmap_update[0] >= 4:
+                        elapsed = int(time.time() - phase_start)
+                        socketio.emit("host_detail_progress", {
+                            "ip": ip, "phase": 2, "total": 3,
+                            "label": f"Nmap scan in progress... ({elapsed}s)",
+                        })
 
-            # Phase 3: Deep scan probes
+            hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+            hb_thread.start()
+
+            # Start SSDP discovery in background (runs during nmap)
+            ssdp_result_holder = {}
+            def _ssdp_bg():
+                if not deep_ssdp:
+                    return
+                try:
+                    ssdp_result_holder.update(ssdp_discover(timeout=ssdp_timeout))
+                except Exception:
+                    pass
+            ssdp_thread = threading.Thread(target=_ssdp_bg, daemon=True)
+            ssdp_thread.start()
+
+            nmap_result = full_scan_with_progress(
+                ip,
+                progress_callback=nmap_progress,
+                top_ports=top_ports,
+                host_timeout=host_timeout,
+            )
+
+            # Stop heartbeat
+            scan_active.clear()
+            hb_thread.join(timeout=2)
+
+            # Wait for SSDP to finish (max 5 s, usually already done)
+            ssdp_thread.join(timeout=5)
+            ssdp_info = ssdp_result_holder.get(ip)
+
+            # Phase 3: Deep scan probes (HTTP, SSL, banners, SSDP, MAC)
             open_ports = nmap_result.get("open_ports", [])
-            # Pass MAC from earlier phases to avoid redundant ARP call
             known_mac = (nmap_result.get("mac_address")
                          or host_info.get("mac_from_arp"))
             socketio.emit("host_detail_progress", {
                 "ip": ip, "phase": 3, "total": 3,
-                "label": "Probing HTTP, SSL & banners..."
+                "label": "Probing HTTP, SSL, banners & SSDP..."
             })
-            deep_result = deep_scan_host(ip, open_ports, timeout=5,
-                                         arp_mac=known_mac)
+            deep_result = deep_scan_host(
+                ip, open_ports, timeout=deep_timeout,
+                ssdp_info=ssdp_info,
+                arp_mac=known_mac,
+                nmap_services=nmap_result.get("services"),
+                probe_http=deep_http,
+                probe_ssl=deep_ssl,
+                probe_banners=deep_banners,
+                probe_mac_vendor=deep_mac_vendor,
+            )
 
             combined = {**host_info, **nmap_result, **deep_result}
             socketio.emit("host_detail_result", combined)
 
         except Exception as e:
             socketio.emit("host_detail_error", {"error": str(e), "ip": ip})
+        finally:
+            scan_active.clear()  # Ensure heartbeat stops
 
     socketio.start_background_task(run_detail_scan)
 
@@ -263,6 +343,12 @@ def handle_batch_full_scan(data):
         total = len(ips)
         done = 0
 
+        # Inject -Pn: skip nmap host discovery since ping sweep already
+        # confirmed these hosts are alive (prevents false "host not found").
+        effective_args = nmap_args
+        if "-Pn" not in effective_args and "-pn" not in effective_args.lower():
+            effective_args = "-Pn " + effective_args
+
         # Gather ARP table once for MAC lookups
         socketio.emit("batch_full_scan_progress", {
             "done": 0,
@@ -276,7 +362,7 @@ def handle_batch_full_scan(data):
             if not active_scans.get(scan_id, False):
                 return {"ip": ip, "error": "Cancelled"}
             try:
-                nmap_result = scan_host(ip, arguments=nmap_args, timeout=30)
+                nmap_result = scan_host(ip, arguments=effective_args, timeout=30)
 
                 # MAC / vendor from ARP (shown in table)
                 mac = arp_table.get(ip) or nmap_result.get("mac_address")

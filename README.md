@@ -1,8 +1,8 @@
-﻿# Subnet Scanner v1.1.2
+﻿# Subnet Scanner v1.1.7
 
 A real-time network scanning web application built with Flask, Socket.IO, and Nmap. Discover hosts on your network with a clean dark UI featuring a visual IP grid, live status updates, and detailed host information.
 
-![Version](https://img.shields.io/badge/Version-1.1.2-cyan)
+![Version](https://img.shields.io/badge/Version-1.1.7-cyan)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.x-green?logo=flask&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -12,6 +12,7 @@ A real-time network scanning web application built with Flask, Socket.IO, and Nm
 ## Table of Contents
 
 - [Features](#features)
+- [Scan Profiles](#scan-profiles)
 - [Platform Support](#platform-support)
 - [Tech Stack](#tech-stack)
 - [Quick Start](#quick-start)
@@ -47,18 +48,18 @@ A real-time network scanning web application built with Flask, Socket.IO, and Nm
 
 ### Detail Modal Probes (full deep scan)
 The detail modal always runs a complete independent scan with all probes:
-- **Nmap full scan**  Top 1000 ports with service/version detection and scripts, with real-time port progress
+- **Nmap full scan**  Top 2500 ports (configurable: 1000-10000) with service/version detection, real-time port progress
 - **HTTP/HTTPS probing**  Server header, page title, redirect chain, security headers (separate sections for HTTP and HTTPS)
-- **SSL/TLS certificate analysis**  Subject, issuer, validity dates, SANs, cipher suite, port indicator
-- **TCP banner grabbing**  Raw banners from SSH, FTP, SMTP, MySQL, RDP, and more (with protocol names)
+- **SSL/TLS certificate analysis**  Subject, issuer, validity dates, SANs, cipher suite, port indicator (disabled by default)
+- **TCP banner grabbing**  Raw banners from SSH, FTP, SMTP, MySQL, RDP, and more (disabled by default)
 - **MAC vendor lookup**  OUI database resolves MAC addresses to manufacturer names
-- **SSDP/UPnP discovery**  Multicast M-SEARCH finds smart devices, routers, IoT, media servers
+- **SSDP/UPnP discovery**  Multicast M-SEARCH finds smart devices, routers, IoT, media servers (disabled by default)
 - **WHOIS lookup**  Basic WHOIS information for the IP address
 - **DNS / NetBIOS**  Reverse DNS, NetBIOS name and workgroup resolution
 
 ### Host Detail Modal
 Click any host for a deep-dive view with a full independent scan (3-phase progress tracker with real-time Nmap port progress):
-- **3-phase progress tracker** — DNS/NetBIOS/WHOIS → Nmap scan (~N/1000 ports) → HTTP/SSL/banner probes
+- **3-phase progress tracker** — DNS/NetBIOS/WHOIS → Nmap scan (configurable ports) → HTTP/SSL/banner probes
 - **Basic info** — IP, status, hostname, response time, reverse DNS, MAC address, vendor (OUI), NetBIOS name & workgroup
 - **All hostnames** — Full nmap hostnames array with type labels (PTR, user, etc.)
 - **Port & service table** — With version info, CPE identifiers per service, and per-port NSE script output
@@ -83,9 +84,24 @@ Click any host for a deep-dive view with a full independent scan (3-phase progre
 - **Status Card**  Real-time state indicator (Idle / Scanning / Live / Done / Error) with progress bar.
 
 ### Customization
-- **Settings Modal**  Scan parameters, deep scan probe toggles, display preferences, notifications, live update behavior. All persisted in localStorage.
+- **Scan Profiles**  Fast / Normal / Thorough presets for different network conditions. One-click configuration.
+- **Settings Modal**  Comprehensive settings organized by category — scan parameters, probe toggles, display preferences, notifications. All persisted in localStorage.
 - **Keyboard Shortcuts**  `Ctrl+Enter` to start scan, `Escape` to stop.
 - **Fullscreen Mode**  Toggle from the navbar.
+
+---
+
+## Scan Profiles
+
+The Settings modal includes three built-in scan profiles that apply optimized presets for different scenarios:
+
+| Profile      | Ping Timeout | Threads | Sweep Pings | Table Ports | Detail Ports | Timing | Best For |
+|--------------|--------------|---------|-------------|-------------|--------------|--------|----------|
+| **Fast**     | 500ms        | 100     | 1           | Top 20      | Top 1000     | T5     | Quick network overview, responsive hosts |
+| **Normal**   | 1000ms       | 50      | 1           | Top 20      | Top 2500     | T4     | Typical home/office networks (default) |
+| **Thorough** | 2000ms       | 25      | 2           | Top 100     | Top 5000     | T3     | Unreliable networks, slow hosts |
+
+Clicking a profile button instantly applies all settings. You can then fine-tune individual values if needed.
 
 ---
 
@@ -185,10 +201,11 @@ start.bat
 
 The batch script will automatically:
 1. Verify Python and Nmap are installed and in PATH
-2. Create a `.venv` virtual environment (first run only)
-3. Install all dependencies from `requirements.txt`
-4. Open your default browser at `http://localhost:5000`
-5. Start the Flask development server
+2. **Kill any existing server on port 5000** (safe restart)
+3. Create a `.venv` virtual environment (first run only)
+4. Install all dependencies from `requirements.txt`
+5. Open your default browser at `http://localhost:5000`
+6. Start the Flask development server
 
 **No administrator privileges required.** The scanner works fully without elevation.
 
@@ -230,7 +247,8 @@ This enables: OS detection (`-O`), SYN scan (`-sS`), MAC address via Nmap on loc
 | `MAX_THREADS`     | `100`                          | Maximum parallel ping threads          |
 | `PING_TIMEOUT`    | `1`                            | Ping timeout in seconds                |
 | `NMAP_TIMEOUT`    | `30`                           | Nmap scan timeout in seconds           |
-| `DEFAULT_NMAP_ARGS` | `-sV -sC -O --top-ports 100` | Default Nmap arguments for detail scans |
+
+> **Note:** Nmap arguments are now configured via the Settings modal (port count, timing template). The old `DEFAULT_NMAP_ARGS` config option was removed in v1.1.5.
 
 **Windows (PowerShell):**
 ```powershell
@@ -247,26 +265,48 @@ MAX_THREADS=200 python app.py
 
 ## Settings Modal
 
-The Settings modal (gear icon in the navbar) provides runtime configuration. All settings are **persisted in localStorage** and applied immediately. Click **Reset** to restore defaults.
+The Settings modal (gear icon in the navbar) provides runtime configuration organized into clear sections. All settings are **persisted in localStorage** and applied immediately. Click **Reset** to restore defaults.
+
+### Scan Profile
+One-click presets that configure multiple settings at once. See [Scan Profiles](#scan-profiles) for details.
 
 ### Quick Sweep
 | Setting            | Default | Description                                    |
 |--------------------|---------|------------------------------------------------|
 | Ping Timeout (ms)  | 1000    | Maximum wait time per host ping                |
 | Concurrent Threads | 50      | Number of parallel scan threads                |
+| Pings per Host     | 1       | ICMP pings during sweep (1 = fastest)          |
 
-### Full Scan
-| Setting              | Default                   | Description                                    |
-|----------------------|---------------------------|------------------------------------------------|
-| Nmap Arguments       | `-sV --top-ports 20 -T4`  | Custom flags passed to Nmap for each host      |
-| Nmap Top Ports       | 20 (fast)                 | Quick select: 20, 100, 500, or 1000 ports      |
-| Probe Timeout (s)    | 5                         | Timeout per deep probe (HTTP, SSL, banner)     |
-| SSDP Timeout (s)     | 4                         | Wait time for UPnP multicast discovery         |
-| HTTP/HTTPS probing   | On                        | Server header, page title, redirect chain      |
-| SSL/TLS analysis     | On                        | Certificate subject, issuer, validity, SANs    |
-| TCP banner grabbing  | On                        | Raw banners from SSH, FTP, SMTP, MySQL, etc.   |
-| SSDP / UPnP discovery| On                       | Multicast M-SEARCH for smart devices           |
-| MAC vendor lookup    | On                        | OUI database resolves MAC to manufacturer      |
+### Full Scan (Table)
+Settings for batch scanning all online hosts to populate the table view.
+
+| Setting              | Default | Options           | Description                                    |
+|----------------------|---------|-------------------|------------------------------------------------|
+| Top Ports            | 20      | 20, 50, 100, 200  | Number of ports per host in batch scan         |
+| Nmap Timing          | T4      | T3, T4, T5        | Nmap timing template (T5 = fastest)            |
+
+### Detail Modal
+Settings for the in-depth scan when opening a host's detail view.
+
+| Setting              | Default | Options                     | Description                                    |
+|----------------------|---------|-----------------------------|------------------------------------------------|
+| Top Ports            | 2500    | 1000, 2500, 5000, 10000     | Number of ports for detail scan                |
+| Host Timeout (s)     | 180     | 60 - 600                    | Max time for nmap to scan a single host        |
+
+### Deep Probes
+Additional probes run after the nmap scan in detail view.
+
+| Setting              | Default | Description                                    |
+|----------------------|---------|------------------------------------------------|
+| Probe Timeout (s)    | 5       | Timeout per probe (HTTP, SSL, banner)          |
+| SSDP Timeout (s)     | 4       | Wait time for UPnP multicast discovery         |
+| HTTP/HTTPS probing   | On      | Server header, page title, redirect chain      |
+| SSL/TLS analysis     | **Off** | Certificate subject, issuer, validity, SANs    |
+| TCP banner grabbing  | **Off** | Raw banners from SSH, FTP, SMTP, MySQL, etc.   |
+| SSDP / UPnP discovery| **Off** | Multicast M-SEARCH for smart devices           |
+| MAC vendor lookup    | On      | OUI database resolves MAC to manufacturer      |
+
+> **Note:** SSL/TLS, TCP banner grabbing, and SSDP are disabled by default for faster scans. Enable them in settings when needed.
 
 ### Display
 | Setting                   | Default | Description                            |
@@ -331,7 +371,7 @@ The Settings modal (gear icon in the navbar) provides runtime configuration. All
    
    > **Smart sweep skip:** If a Quick Sweep was already completed and results are available, clicking Full Scan skips the redundant ping sweep and goes straight to the deep scan phase.
 3. **Live Update**: Client periodically emits `live_update` > server re-pings all IPs in parallel > streams results.
-4. **Host Detail**: Click a host > `scan_host_detail` > server runs `get_full_host_info()` (DNS, NetBIOS, ARP, WHOIS) + Nmap full scan (top 1000 ports, `-sV -sC`, `-O -A` if admin) + deep probes > emits combined result. Response time is merged from cached ping data.
+4. **Host Detail**: Click a host > `scan_host_detail` > server runs `get_full_host_info()` (DNS, NetBIOS, ARP, WHOIS) + Nmap full scan (configurable ports, default 2500, `-sV`, `-O -A` if admin) + deep probes > emits combined result. Response time is merged from cached ping data.
 
 ---
 
@@ -339,40 +379,42 @@ The Settings modal (gear icon in the navbar) provides runtime configuration. All
 
 ```
 subnet-scanner/
-+-- app.py                 # Flask application & SocketIO event handlers
++-- app.py                 # Flask application & SocketIO event handlers (~445 lines)
 |                          # Routes: / (dashboard), /api/host/<ip>
 |                          # Events: start_scan, stop_scan, batch_full_scan,
 |                          #         live_update, scan_host_detail
 |
-+-- config.py              # Configuration (threads, timeouts, nmap args)
++-- config.py              # Configuration (threads, timeouts)
 +-- requirements.txt       # Python dependencies
 +-- start.bat              # Windows auto-setup (venv + deps + launch)
+|                          # Auto-kills existing server on port 5000
 |
 +-- scanner/               # Backend scanning modules
 |   +-- __init__.py
 |   +-- ping_sweep.py      # Parallel ICMP ping sweep with TTL OS guessing
-|   +-- nmap_scanner.py    # Nmap wrapper: quick_scan, full_scan, scan_host
+|   +-- nmap_scanner.py    # Nmap wrapper: quick_scan, full_scan, scan_host (~315 lines)
 |   |                      # Auto --unprivileged on Windows without admin
 |   +-- host_info.py       # DNS, NetBIOS (nbtstat/nmblookup), ARP, WHOIS
-|   +-- deep_scan.py       # HTTP/HTTPS probe, SSL cert analysis,
+|   +-- deep_scan.py       # HTTP/HTTPS probe, SSL cert analysis, (~535 lines)
 |                          # TCP banner grab, SSDP/UPnP discovery,
 |                          # full ARP table scan, MAC vendor lookup (OUI)
 |
 +-- templates/
-|   +-- base.html          # Base layout: navbar, settings modal, footer
+|   +-- base.html          # Base layout: navbar, settings modal, footer (~290 lines)
+|                          # Settings modal with profile selector
 |   +-- index.html         # Main page: scan controls, stats, grid/list,
 |                          # toolbar, host detail modal
 |
 +-- static/
     +-- css/
-    |   +-- custom.css     # Complete dark theme (1400+ lines)
+    |   +-- custom.css     # Complete dark theme (~1560 lines)
+    |                      # Profile button styles, toggle switches
     +-- js/
-        +-- scanner.js     # Frontend controller (1750+ lines)
+        +-- scanner.js     # Frontend controller (~2050 lines)
                            # WebSocket, state, grid/list rendering,
                            # DataTable (with natural IP sort),
-                           # live update, host detail modal,
-                           # well-known port names, comprehensive
-                           # host detail rendering
+                           # profile presets, settings management,
+                           # live update, host detail modal
 ```
 
 ---
@@ -413,7 +455,7 @@ Toggle **Live Update** to continuously re-ping all discovered hosts. Configurabl
 
 ### 5. Host Detail
 
-Click any host to open the detail modal. Runs a full Nmap scan (top 1000 ports, `-sV -sC`) + deep scan probes + WHOIS lookup automatically. The modal shows everything collected:
+Click any host to open the detail modal. Runs a full Nmap scan (configurable ports, default 2500) + deep scan probes + WHOIS lookup automatically. The modal shows everything collected:
 
 - **Basic info** — IP, status, hostname, response time, reverse DNS, MAC (styled code block), vendor (OUI), NetBIOS, workgroup
 - **All hostnames** — Full nmap hostname array with type labels (PTR, user, etc.)
@@ -453,11 +495,11 @@ Nmap scan on a single host. Body: `{ "scan_type": "quick" | "full" }`
 |--------------------|--------------------------------------------|---------------------------------------|
 | `start_scan`     | `{ subnet, scan_id, ping_timeout, threads }` | Begin ping sweep with settings      |
 | `stop_scan`      | `{ scan_id }`                           | Stop active scan                      |
-| `batch_full_scan`| `{ ips, nmap_args, deep_timeout, ssdp_timeout, deep_http, deep_ssl, deep_banners, deep_ssdp, deep_mac_vendor }` | Nmap + deep scan with probe toggles |
+| `batch_full_scan`| `{ ips, top_ports, timing, deep_timeout, ssdp_timeout, deep_http, deep_ssl, deep_banners, deep_ssdp, deep_mac_vendor }` | Nmap + deep scan with settings |
 | `batch_nmap_scan`| `{ ips: [...] }`                        | Nmap only on all listed IPs           |
 | `stop_batch_scan`| `{}`                                    | Stop running batch scan               |
 | `live_update`    | `{ ips: [...], ping_count: 2 }`         | Re-ping listed IPs                    |
-| `scan_host_detail`| `{ ip }`                               | Detailed host scan                    |
+| `scan_host_detail`| `{ ip, top_ports, host_timeout, deep_timeout, ssdp_timeout, deep_http, deep_ssl, deep_banners, deep_ssdp, deep_mac_vendor }` | Detailed host scan with settings |
 
 #### Server > Client
 
@@ -573,6 +615,107 @@ Debug mode is enabled by default  the server auto-reloads on file changes.
 
 ## Changelog
 
+### v1.1.7
+
+**UI Fixes**
+- Fixed missing icon on Fast profile button (was using non-existent `fa-rabbit`, now uses `fa-bolt`)
+
+**Default Settings**
+- SSL/TLS certificate analysis now disabled by default (faster scans)
+- TCP banner grabbing now disabled by default
+- SSDP/UPnP discovery now disabled by default
+- These can be enabled in Settings → Deep Probes when needed
+
+### v1.1.6
+
+**Scan Profiles**
+- Added scan profile selector (Fast / Normal / Thorough) at the top of the Settings modal
+- Profiles apply preset values for ping timeout, threads, port counts, nmap timing, and probe timeouts
+- **Fast**: 500ms timeout, 100 threads, top 20 ports (table), top 1000 ports (detail), T5 timing
+- **Normal**: 1000ms timeout, 50 threads, top 20 ports (table), top 2500 ports (detail), T4 timing
+- **Thorough**: 2000ms timeout, 25 threads, top 100 ports (table), top 5000 ports (detail), T3 timing
+
+**Settings Modal Redesign**
+- Reorganized settings into clear sections: Scan Profile, Quick Sweep, Full Scan (Table), Detail Modal, Deep Probes, Display, Notifications, Live Update
+- Added separate port count settings for batch table scan vs detail modal scan
+- Detail modal now defaults to 2500 ports (configurable: 1000 / 2500 / 5000 / 10000)
+- Added "Pings per Host" setting for quick sweep (1-5)
+- Added "Host Timeout" setting for detail modal (60-600 seconds)
+- Added "Nmap Timing" selector (T3/T4/T5) for batch full scan
+- Removed the raw "Nmap Arguments" text field — now using structured dropdowns
+- Modal is now larger (`modal-lg`) and scrollable for better UX
+
+**Backend Changes**
+- `full_scan_with_progress()` now accepts `top_ports` and `host_timeout` parameters
+- `scan_host_detail` WebSocket handler accepts all deep probe settings from client
+- Detail scan respects per-probe toggles (HTTP, SSL, banners, SSDP, MAC vendor)
+- Footer updated to 2026
+
+### v1.1.5
+
+**Detail Modal Hang Fix**
+- Added `--host-timeout 120s` to the detail modal nmap scan to prevent indefinite hangs on unresponsive hosts
+- Added heartbeat thread during Phase 2 (nmap scan) — emits periodic progress events when nmap is silent, keeping the frontend informed
+- Added client-side 3-minute timeout: if no progress events arrive for 3 minutes, the scan is marked as timed out with a user-friendly error message
+- Timeout resets on every progress event, so long-running scans that report progress are not killed prematurely
+- Stale result filtering: `host_detail_result` and `host_detail_error` events now check the IP matches the currently open modal, discarding results from previously opened hosts
+- `--stats-every` interval increased from 1s to 2s to reduce progress event noise
+- Improved subprocess cleanup in `full_scan_with_progress()`: `proc.stdout.close()` in reader thread `finally` block, `proc.wait(timeout=10)` after `proc.kill()` to avoid zombie processes
+- Partial results are now returned on timeout (nmap XML may contain partial data)
+- Modal close event (`hidden.bs.modal`) clears the client-side timeout
+
+**REST API `-Pn` Fix**
+- `scan_host()` default arguments now include `-Pn` (was missing from default, affecting REST API calls)
+- REST API `/api/host/<ip>/scan` endpoint now injects `-Pn` into custom `nmap_args` when not already present
+- Ensures consistent host-discovery behaviour across all scan paths (WebSocket + REST)
+
+**Dependency & Config Cleanup**
+- Removed unused `eventlet` from `requirements.txt` — the app uses `async_mode="threading"`, eventlet was never imported
+- Removed unused `DEFAULT_NMAP_ARGS` from `config.py` — was never referenced anywhere in the codebase
+
+### v1.1.4
+
+**Nmap Host Discovery Fix**
+- Added `-Pn` (skip host discovery) to all nmap scan functions: `quick_scan()`, `full_scan()`, `full_scan_with_progress()`, and `batch_full_scan`
+- Fixes a critical issue where nmap's TCP-based host discovery (ports 80/443) would fail on hosts that respond to ICMP ping but block those TCP ports, resulting in "host not found" and empty scan results
+- Since the ping sweep already confirmed hosts are alive, nmap's redundant host discovery phase is safely skipped
+
+**Deep Probe Fallback on Common Ports**
+- When nmap returns zero open ports, deep scan probes now try common ports instead of skipping entirely
+- HTTP probes fall back to ports 80, 8080, 8000, 8888
+- HTTPS probes fall back to ports 443, 8443
+- SSL certificate probes fall back to ports 443, 8443
+- Banner grabbing falls back to ports 22, 21, 25, 80, 443, 3389, 8080
+- Ensures the detail modal shows useful information even when nmap can't detect ports (e.g. firewall-filtered hosts)
+
+**SSDP Discovery in Detail Modal**
+- SSDP/UPnP multicast discovery now runs during the detail modal scan (Phase 2, background thread during nmap)
+- Previously SSDP was only available in batch full scans, detail modal had no SSDP data
+
+**HTTP/SSL Port Expansion from Nmap Services**
+- `deep_scan_host()` now accepts `nmap_services` parameter
+- HTTP probe ports are dynamically expanded when nmap detects HTTP services on non-standard ports
+- SSL probe ports are dynamically expanded when nmap detects SSL/TLS services on non-standard ports
+- Web interfaces on unusual ports (e.g. management consoles on port 9090) are now discovered
+
+**Code Quality**
+- Moved `import threading` to module level in app.py
+- Fixed copyright year in footer (2026 → 2025)
+
+### v1.1.3
+
+**start.bat — Auto-kill existing server**
+- `start.bat` now checks if port 5000 is already in use before starting
+- Automatically kills the existing server process (via `netstat` + `taskkill`)
+- Safe to double-click `start.bat` without manually stopping the previous instance
+
+**Code Quality & Cleanup**
+- Removed dead `get_ttl_os_guess()` function from deep_scan.py (duplicate of ping_sweep's `_ttl_os_guess()`)
+- Moved `shutil` import to module level in host_info.py (was re-imported on every WHOIS call)
+- Fixed duplicate `8443: 'HTTPS-Alt'` entry in the well-known ports map
+- Fixed memory growth: `scan_results` dict now clears stale entries on new scan
+- Fixed changelog reference: nmap progress uses stdout, not stderr
+
 ### v1.1.2
 
 **Full Scan Optimization**
@@ -582,7 +725,7 @@ Debug mode is enabled by default  the server auto-reloads on file changes.
 
 **Nmap Port Progress in Detail Modal**
 - Detail modal now shows real-time nmap port progress (~N/1000 ports) during phase 2
-- Uses `--stats-every 1s` subprocess with stderr parsing for live progress updates
+- Uses `--stats-every 1s` subprocess with stdout parsing for live progress updates
 - Progress bar interpolates smoothly within each scan phase
 - New `full_scan_with_progress()` function in nmap_scanner.py
 
@@ -657,7 +800,7 @@ Debug mode is enabled by default  the server auto-reloads on file changes.
 
 **Backend**
 - `get_full_host_info()` now includes WHOIS lookup
-- Detail modal always runs full Nmap scan (top 1000 ports, 180s timeout)
+- Detail modal runs configurable Nmap scan (default 2500 ports, configurable timeout)
 - Refactored HTTP rendering into shared `renderHttpSection()` helper
 
 **Documentation**
