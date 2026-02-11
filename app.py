@@ -1,5 +1,5 @@
 """
-Subnet Scanner v1.1.7 — Flask Application
+Subnet Scanner v1.2.0 — Flask Application
 A modern network scanning web application.
 """
 
@@ -12,7 +12,9 @@ from config import Config
 from scanner.ping_sweep import ping_sweep, _ping_host
 from scanner.nmap_scanner import scan_host, quick_scan, full_scan, full_scan_with_progress
 from scanner.host_info import get_full_host_info
-from scanner.deep_scan import deep_scan_host, get_arp_table_full, get_mac_vendor, ssdp_discover
+from scanner.deep_scan import (deep_scan_host, get_arp_table_full, get_mac_vendor,
+                               ssdp_discover, get_ssh_host_key, get_mdns_info,
+                               get_geolocation, is_private_ip)
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -91,6 +93,7 @@ def handle_start_scan(data):
     ping_timeout = data.get("ping_timeout", app.config["PING_TIMEOUT"] * 1000)
     ping_timeout_s = max(1, min(ping_timeout // 1000, 10))  # Convert ms → s, clamp 1-10
     threads = max(1, min(data.get("threads", app.config["MAX_THREADS"]), 500))
+    ping_count = max(1, min(data.get("ping_count", 1), 5))  # 1-5 pings per host
 
     active_scans[scan_id] = True
     scan_results[scan_id] = []
@@ -118,6 +121,7 @@ def handle_start_scan(data):
                 subnet,
                 timeout=ping_timeout_s,
                 max_threads=threads,
+                count=ping_count,
                 callback=on_result,
             )
 
@@ -167,6 +171,10 @@ def handle_scan_host_detail(data):
     deep_banners = data.get("deep_banners", True)
     deep_ssdp = data.get("deep_ssdp", True)
     deep_mac_vendor = data.get("deep_mac_vendor", True)
+    # Extended discovery probes
+    deep_ssh = data.get("deep_ssh", True)
+    deep_mdns = data.get("deep_mdns", True)
+    deep_geo = data.get("deep_geo", True)
 
     emit("host_detail_scanning", {"ip": ip})
 
@@ -177,14 +185,14 @@ def handle_scan_host_detail(data):
         try:
             # Phase 1: Host info (DNS, NetBIOS, ARP, WHOIS)
             socketio.emit("host_detail_progress", {
-                "ip": ip, "phase": 1, "total": 3,
+                "ip": ip, "phase": 1, "total": 4,
                 "label": "Gathering DNS, NetBIOS & WHOIS info..."
             })
             host_info = get_full_host_info(ip)
 
             # Phase 2: Nmap full scan
             socketio.emit("host_detail_progress", {
-                "ip": ip, "phase": 2, "total": 3,
+                "ip": ip, "phase": 2, "total": 4,
                 "label": f"Running Nmap scan (top {top_ports} ports)..."
             })
 
@@ -194,7 +202,7 @@ def handle_scan_host_detail(data):
                 last_nmap_update[0] = time.time()
                 ports_est = round(pct / 100 * top_ports)
                 socketio.emit("host_detail_progress", {
-                    "ip": ip, "phase": 2, "total": 3,
+                    "ip": ip, "phase": 2, "total": 4,
                     "label": f"Nmap scan — ~{ports_est}/{top_ports} ports...",
                     "sub_progress": pct,
                     "ports_done": ports_est,
@@ -213,7 +221,7 @@ def handle_scan_host_detail(data):
                     if time.time() - last_nmap_update[0] >= 4:
                         elapsed = int(time.time() - phase_start)
                         socketio.emit("host_detail_progress", {
-                            "ip": ip, "phase": 2, "total": 3,
+                            "ip": ip, "phase": 2, "total": 4,
                             "label": f"Nmap scan in progress... ({elapsed}s)",
                         })
 
@@ -252,7 +260,7 @@ def handle_scan_host_detail(data):
             known_mac = (nmap_result.get("mac_address")
                          or host_info.get("mac_from_arp"))
             socketio.emit("host_detail_progress", {
-                "ip": ip, "phase": 3, "total": 3,
+                "ip": ip, "phase": 3, "total": 4,
                 "label": "Probing HTTP, SSL, banners & SSDP..."
             })
             deep_result = deep_scan_host(
@@ -266,7 +274,57 @@ def handle_scan_host_detail(data):
                 probe_mac_vendor=deep_mac_vendor,
             )
 
-            combined = {**host_info, **nmap_result, **deep_result}
+            # Phase 4: Extended discovery (mDNS, SSH fingerprint, Geolocation)
+            socketio.emit("host_detail_progress", {
+                "ip": ip, "phase": 4, "total": 4,
+                "label": "Extended discovery (SSH, mDNS, Geo)..."
+            })
+            extended_result = {}
+
+            # SSH host key (if port 22 is open)
+            if deep_ssh and (22 in open_ports or not open_ports):
+                ssh_raw = get_ssh_host_key(ip, timeout=deep_timeout)
+                if ssh_raw.get("ssh_banner") or ssh_raw.get("ssh_fingerprint"):
+                    extended_result["ssh_info"] = {
+                        "banner": ssh_raw.get("ssh_banner"),
+                        "fingerprint": ssh_raw.get("ssh_fingerprint"),
+                        "key_type": ssh_raw.get("ssh_key_type"),
+                        "port": 22,
+                    }
+
+            # mDNS / Bonjour discovery
+            if deep_mdns:
+                mdns_raw = get_mdns_info(ip, timeout=2)
+                if mdns_raw.get("mdns_hostname"):
+                    extended_result["mdns_info"] = {
+                        "hostname": mdns_raw.get("mdns_hostname"),
+                    }
+
+            # Geolocation (public IPs only)
+            if deep_geo and not is_private_ip(ip):
+                geo_raw = get_geolocation(ip, timeout=3)
+                if geo_raw.get("geo_country"):
+                    extended_result["geolocation"] = {
+                        "country": geo_raw.get("geo_country"),
+                        "country_code": geo_raw.get("geo_country_code"),
+                        "region": geo_raw.get("geo_region"),
+                        "city": geo_raw.get("geo_city"),
+                        "isp": geo_raw.get("geo_isp"),
+                        "org": geo_raw.get("geo_org"),
+                        "as": geo_raw.get("geo_as"),
+                        "timezone": geo_raw.get("geo_timezone"),
+                        "lat": geo_raw.get("geo_lat"),
+                        "lon": geo_raw.get("geo_lon"),
+                    }
+
+            # Signal all phases complete before sending result
+            socketio.emit("host_detail_progress", {
+                "ip": ip, "phase": 4, "total": 4,
+                "label": "Scan complete!",
+                "sub_progress": 100,
+            })
+
+            combined = {**host_info, **nmap_result, **deep_result, **extended_result}
             socketio.emit("host_detail_result", combined)
 
         except Exception as e:
@@ -332,6 +390,7 @@ def handle_batch_full_scan(data):
         return
 
     nmap_args = data.get("nmap_args", "-sV --top-ports 20 -T4")
+    nmap_timeout = max(15, min(data.get("nmap_timeout", 60), 300))  # 15s-300s
     probe_mac_vendor = data.get("deep_mac_vendor", True)
 
     scan_id = "batch_full_scan"
@@ -362,7 +421,7 @@ def handle_batch_full_scan(data):
             if not active_scans.get(scan_id, False):
                 return {"ip": ip, "error": "Cancelled"}
             try:
-                nmap_result = scan_host(ip, arguments=effective_args, timeout=30)
+                nmap_result = scan_host(ip, arguments=effective_args, timeout=nmap_timeout)
 
                 # MAC / vendor from ARP (shown in table)
                 mac = arp_table.get(ip) or nmap_result.get("mac_address")

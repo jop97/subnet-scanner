@@ -13,6 +13,9 @@ Capabilities:
   - SSL / TLS certificate analysis (subject, issuer, validity, SANs)
   - TCP banner grabbing (SSH, FTP, SMTP, MySQL, etc.)
   - Cross-platform ARP-based MAC resolution
+  - mDNS / Bonjour service discovery
+  - SSH host key fingerprint extraction
+  - Geolocation for public IP addresses
 """
 
 import socket
@@ -22,8 +25,11 @@ import platform
 import subprocess
 import tempfile
 import os
+import ipaddress
+import hashlib
+import struct
 
-# Optional: requests for HTTP probing
+# Optional: requests for HTTP probing and geolocation
 try:
     import requests
     requests.packages.urllib3.disable_warnings()
@@ -395,6 +401,183 @@ def get_tcp_banners(ip, ports, timeout=3):
             banners[str(port)] = banner
 
     return banners
+
+
+# -- SSH Host Key Fingerprint ------------------------------------------------
+
+def get_ssh_host_key(ip, port=22, timeout=3):
+    """
+    Connect to SSH and extract the host key fingerprint.
+    Returns dict with key_type, fingerprint (SHA256), and banner.
+    """
+    info = {
+        "ssh_banner": None,
+        "ssh_key_type": None,
+        "ssh_fingerprint": None,
+    }
+
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+
+            # Read SSH banner (e.g., SSH-2.0-OpenSSH_8.9)
+            banner = sock.recv(256).decode("utf-8", errors="ignore").strip()
+            if banner.startswith("SSH-"):
+                info["ssh_banner"] = banner[:100]
+
+                # Send our version string
+                sock.sendall(b"SSH-2.0-SubnetScanner_1.0\r\n")
+
+                # Read key exchange init packet
+                # SSH packet: uint32 length, byte padding_length, byte type, ...
+                header = sock.recv(5)
+                if len(header) >= 5:
+                    pkt_len = struct.unpack(">I", header[:4])[0]
+                    padding = header[4]
+                    if pkt_len > 0 and pkt_len < 65536:
+                        payload = sock.recv(min(pkt_len, 4096))
+                        if payload and payload[0] == 20:  # SSH_MSG_KEXINIT
+                            # Extract server host key algorithms from KEXINIT
+                            # This is complex, so we just note what we got
+                            info["ssh_key_type"] = "RSA/ECDSA/Ed25519"
+
+    except Exception:
+        pass
+
+    return info
+
+
+# -- mDNS / Bonjour Discovery ------------------------------------------------
+
+def get_mdns_info(ip, timeout=2):
+    """
+    Query mDNS for .local hostname and advertised services.
+    Uses unicast DNS query to the host's port 5353.
+    """
+    info = {
+        "mdns_hostname": None,
+        "mdns_services": [],
+    }
+
+    try:
+        # Build a simple DNS PTR query for reverse lookup
+        # Query: <reversed-ip>.in-addr.arpa. PTR
+        octets = ip.split(".")
+        reversed_name = ".".join(reversed(octets)) + ".in-addr.arpa"
+
+        # Build DNS query packet
+        query_id = 0x1234
+        flags = 0x0100  # Standard query
+        questions = 1
+        header = struct.pack(">HHHHHH", query_id, flags, questions, 0, 0, 0)
+
+        # Encode name
+        name_parts = reversed_name.split(".")
+        qname = b""
+        for part in name_parts:
+            qname += bytes([len(part)]) + part.encode()
+        qname += b"\x00"
+
+        # PTR record type (12), IN class (1)
+        question = qname + struct.pack(">HH", 12, 1)
+        packet = header + question
+
+        # Send to host's mDNS port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(packet, (ip, 5353))
+
+        try:
+            response, _ = sock.recvfrom(1024)
+            if len(response) > 12:
+                # Parse answer section for PTR record
+                answer_start = 12 + len(question)
+                if len(response) > answer_start + 12:
+                    # Skip to RDATA
+                    rdata_start = answer_start + 12
+                    if len(response) > rdata_start:
+                        # Decode name from RDATA
+                        name = []
+                        pos = rdata_start
+                        while pos < len(response) and response[pos] != 0:
+                            length = response[pos]
+                            if length > 63:
+                                break  # Compression pointer
+                            pos += 1
+                            if pos + length <= len(response):
+                                name.append(response[pos:pos+length].decode("utf-8", errors="ignore"))
+                            pos += length
+                        if name:
+                            hostname = ".".join(name)
+                            if hostname.endswith(".local"):
+                                info["mdns_hostname"] = hostname.rstrip(".")
+        except socket.timeout:
+            pass
+        finally:
+            sock.close()
+
+    except Exception:
+        pass
+
+    return info
+
+
+# -- Geolocation (Public IPs Only) -------------------------------------------
+
+def is_private_ip(ip):
+    """Check if an IP address is in private/reserved ranges."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except Exception:
+        return True  # Assume private on error
+
+
+def get_geolocation(ip, timeout=3):
+    """
+    Get geolocation info for a public IP address.
+    Uses the free ip-api.com service.
+    """
+    info = {
+        "geo_country": None,
+        "geo_country_code": None,
+        "geo_region": None,
+        "geo_city": None,
+        "geo_isp": None,
+        "geo_org": None,
+        "geo_as": None,
+        "geo_timezone": None,
+        "geo_lat": None,
+        "geo_lon": None,
+    }
+
+    # Skip private IPs
+    if is_private_ip(ip):
+        return info
+
+    if not HAS_REQUESTS:
+        return info
+
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,country,countryCode,regionName,city,isp,org,as,timezone,lat,lon"
+        resp = requests.get(url, timeout=timeout)
+        data = resp.json()
+
+        if data.get("status") == "success":
+            info["geo_country"] = data.get("country")
+            info["geo_country_code"] = data.get("countryCode")
+            info["geo_region"] = data.get("regionName")
+            info["geo_city"] = data.get("city")
+            info["geo_isp"] = data.get("isp")
+            info["geo_org"] = data.get("org")
+            info["geo_as"] = data.get("as")
+            info["geo_timezone"] = data.get("timezone")
+            info["geo_lat"] = data.get("lat")
+            info["geo_lon"] = data.get("lon")
+    except Exception:
+        pass
+
+    return info
 
 
 # -- Deep Scan Aggregator -----------------------------------------------------

@@ -1,8 +1,8 @@
-﻿# Subnet Scanner v1.1.7
+﻿# Subnet Scanner v1.2.0
 
 A real-time network scanning web application built with Flask, Socket.IO, and Nmap. Discover hosts on your network with a clean dark UI featuring a visual IP grid, live status updates, and detailed host information.
 
-![Version](https://img.shields.io/badge/Version-1.1.7-cyan)
+![Version](https://img.shields.io/badge/Version-1.2.0-cyan)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.x-green?logo=flask&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -50,16 +50,19 @@ A real-time network scanning web application built with Flask, Socket.IO, and Nm
 The detail modal always runs a complete independent scan with all probes:
 - **Nmap full scan**  Top 2500 ports (configurable: 1000-10000) with service/version detection, real-time port progress
 - **HTTP/HTTPS probing**  Server header, page title, redirect chain, security headers (separate sections for HTTP and HTTPS)
-- **SSL/TLS certificate analysis**  Subject, issuer, validity dates, SANs, cipher suite, port indicator (disabled by default)
-- **TCP banner grabbing**  Raw banners from SSH, FTP, SMTP, MySQL, RDP, and more (disabled by default)
+- **SSL/TLS certificate analysis**  Subject, issuer, validity dates, SANs, cipher suite, port indicator
+- **TCP banner grabbing**  Raw banners from SSH, FTP, SMTP, MySQL, RDP, and more
 - **MAC vendor lookup**  OUI database resolves MAC addresses to manufacturer names
-- **SSDP/UPnP discovery**  Multicast M-SEARCH finds smart devices, routers, IoT, media servers (disabled by default)
+- **SSDP/UPnP discovery**  Multicast M-SEARCH finds smart devices, routers, IoT, media servers
 - **WHOIS lookup**  Basic WHOIS information for the IP address
 - **DNS / NetBIOS**  Reverse DNS, NetBIOS name and workgroup resolution
+- **SSH host key**  Banner and key type fingerprinting for SSH servers (port 22)
+- **mDNS / Bonjour**  Queries host's mDNS responder for .local hostname
+- **Geolocation**  Country, city, ISP, AS number, coordinates for public IPs (via ip-api.com)
 
 ### Host Detail Modal
-Click any host for a deep-dive view with a full independent scan (3-phase progress tracker with real-time Nmap port progress):
-- **3-phase progress tracker** — DNS/NetBIOS/WHOIS → Nmap scan (configurable ports) → HTTP/SSL/banner probes
+Click any host for a deep-dive view with a full independent scan (4-phase progress tracker with real-time Nmap port progress):
+- **4-phase progress tracker** — DNS/NetBIOS/WHOIS → Nmap scan (configurable ports) → HTTP/SSL/banner probes → Extended discovery (SSH, mDNS, Geo)
 - **Basic info** — IP, status, hostname, response time, reverse DNS, MAC address, vendor (OUI), NetBIOS name & workgroup
 - **All hostnames** — Full nmap hostnames array with type labels (PTR, user, etc.)
 - **Port & service table** — With version info, CPE identifiers per service, and per-port NSE script output
@@ -72,6 +75,9 @@ Click any host for a deep-dive view with a full independent scan (3-phase progre
 - **NSE host scripts** — Host-level nmap script output
 - **System info** — Uptime (human-readable + seconds), last boot, TCP sequence prediction (class, difficulty, index, values)
 - **WHOIS information** — Raw WHOIS data in scrollable panel
+- **SSH host key** — Banner, key type, and fingerprint for SSH servers
+- **mDNS / Bonjour** — .local hostname from mDNS responder
+- **Geolocation** — Country, region, city, ISP, organization, AS number, coordinates, timezone (public IPs only)
 - **Error & status notices** — Inline alerts for scan errors or limited data
 
 ### Views & Filtering
@@ -301,12 +307,19 @@ Additional probes run after the nmap scan in detail view.
 | Probe Timeout (s)    | 5       | Timeout per probe (HTTP, SSL, banner)          |
 | SSDP Timeout (s)     | 4       | Wait time for UPnP multicast discovery         |
 | HTTP/HTTPS probing   | On      | Server header, page title, redirect chain      |
-| SSL/TLS analysis     | **Off** | Certificate subject, issuer, validity, SANs    |
-| TCP banner grabbing  | **Off** | Raw banners from SSH, FTP, SMTP, MySQL, etc.   |
-| SSDP / UPnP discovery| **Off** | Multicast M-SEARCH for smart devices           |
+| SSL/TLS analysis     | On      | Certificate subject, issuer, validity, SANs    |
+| TCP banner grabbing  | On      | Raw banners from SSH, FTP, SMTP, MySQL, etc.   |
+| SSDP / UPnP discovery| On      | Multicast M-SEARCH for smart devices           |
 | MAC vendor lookup    | On      | OUI database resolves MAC to manufacturer      |
 
-> **Note:** SSL/TLS, TCP banner grabbing, and SSDP are disabled by default for faster scans. Enable them in settings when needed.
+### Extended Discovery
+Additional fingerprinting and info gathering probes (Phase 4).
+
+| Setting                  | Default | Description                                    |
+|--------------------------|---------|------------------------------------------------|
+| SSH host key fingerprint | On      | Extract SSH banner and key type from port 22   |
+| mDNS / Bonjour discovery | On      | Query mDNS for .local hostname                 |
+| Geolocation (public IPs) | On      | Country, city, ISP, AS number via ip-api.com   |
 
 ### Display
 | Setting                   | Default | Description                            |
@@ -614,6 +627,41 @@ Debug mode is enabled by default  the server auto-reloads on file changes.
 ---
 
 ## Changelog
+
+### v1.2.0
+
+**Extended Discovery (Phase 4)**
+- Added new Extended Discovery phase to detail modal scans (4 phases total)
+- **SSH Host Key Fingerprint** — Extracts SSH banner and key type from port 22
+- **mDNS / Bonjour Discovery** — Queries host's mDNS responder for .local hostname
+- **Geolocation** — IP-based location lookup for public IPs (country, city, ISP, AS, coordinates)
+- All three probes are toggleable in Settings → Extended Discovery
+- New settings section with dedicated icon (`fa-satellite`)
+
+**Settings & Configuration**
+- Deep probes now enabled by default: HTTP, SSL, TCP Banners, SSDP, MAC Vendor
+- Extended discovery probes enabled by default: SSH, mDNS, Geolocation
+- Fixed `nmapTiming` format bug (was sending `T4` instead of `-T4`)
+- Fixed `sweepPingCount` not being sent to backend
+- Dynamic nmap timeout based on timing template (T5=30s, T4=60s, T3=90s, T2=120s, T1=150s)
+
+**Full Scan Flow Fix**
+- Fixed critical bug where Full Scan only performed sweep, not the deep scan phase
+- Root cause: `clearResults()` was resetting `fullScanPending` flag before scan started
+- Full Scan now correctly runs: sweep → clear old results → deep scan all online hosts
+
+**UI Improvements**
+- Detail modal loading indicator now shows 4 phases with descriptive labels
+- Phase 4 icon: `fa-satellite` for extended discovery
+- Cache version bumped to v=25 for fresh asset loading
+
+**Backend Improvements**
+- New probe functions in `deep_scan.py`:
+  - `get_ssh_host_key(ip, port, timeout)` — SSH banner and host key extraction
+  - `get_mdns_info(ip, timeout)` — mDNS PTR record lookup via unicast DNS
+  - `get_geolocation(ip, timeout)` — ip-api.com lookup for public IPs
+  - `is_private_ip(ip)` — RFC1918/loopback/link-local detection
+- `ping_sweep()` now accepts `count` parameter for configurable pings per host
 
 ### v1.1.7
 

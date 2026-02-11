@@ -19,7 +19,7 @@
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap4.min.css">
 
     <!-- Custom Theme -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}?v=19">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}?v=25">
 
     {% block extra_css %}{% endblock %}
 </head>
@@ -30,7 +30,7 @@
         <a class="nav-brand" href="/">
             <span class="brand-icon"><i class="fas fa-network-wired"></i></span>
             <span class="brand-name">SubnetScanner</span>
-            <span class="brand-tag">v1.1.7</span>
+            <span class="brand-tag">v1.2.0</span>
         </a>
         <div class="nav-actions">
             <span class="nav-conn">
@@ -53,7 +53,7 @@
 
     <!-- ── Footer ──────────────────────────────────────────────────────── -->
     <footer class="app-footer">
-        <span>&copy; 2026 Subnet Scanner v1.1.7</span>
+        <span>&copy; 2026 Subnet Scanner v1.2.0</span>
         <span>Flask &middot; Nmap &middot; Socket.IO &middot; Deep Scan &middot; WHOIS</span>
     </footer>
 
@@ -175,17 +175,17 @@
                             HTTP/HTTPS probing
                         </label>
                         <label class="toggle-row">
-                            <input type="checkbox" id="settingDeepSsl">
+                            <input type="checkbox" id="settingDeepSsl" checked>
                             <span class="toggle-switch"></span>
                             SSL/TLS certificate analysis
                         </label>
                         <label class="toggle-row">
-                            <input type="checkbox" id="settingDeepBanners">
+                            <input type="checkbox" id="settingDeepBanners" checked>
                             <span class="toggle-switch"></span>
                             TCP banner grabbing
                         </label>
                         <label class="toggle-row">
-                            <input type="checkbox" id="settingDeepSsdp">
+                            <input type="checkbox" id="settingDeepSsdp" checked>
                             <span class="toggle-switch"></span>
                             SSDP / UPnP discovery
                         </label>
@@ -193,6 +193,27 @@
                             <input type="checkbox" id="settingDeepMacVendor" checked>
                             <span class="toggle-switch"></span>
                             MAC vendor lookup (OUI)
+                        </label>
+                    </div>
+
+                    <!-- Extended Discovery -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-satellite mr-2"></i>Extended Discovery</h6>
+                        <small class="text-muted d-block mb-2">Additional fingerprinting and info gathering probes.</small>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepSsh" checked>
+                            <span class="toggle-switch"></span>
+                            SSH host key fingerprint
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepMdns" checked>
+                            <span class="toggle-switch"></span>
+                            mDNS / Bonjour discovery
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepGeo" checked>
+                            <span class="toggle-switch"></span>
+                            Geolocation (public IPs)
                         </label>
                     </div>
 

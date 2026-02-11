@@ -117,11 +117,19 @@ def _ping_host(ip: str, timeout: int = 1, count: int = 1) -> dict:
         }
 
 
-def ping_sweep(subnet: str, timeout: int = 1, max_threads: int = 100, callback=None):
+def ping_sweep(subnet: str, timeout: int = 1, max_threads: int = 100,
+               count: int = 1, callback=None):
     """
     Perform a ping sweep on the given subnet (CIDR notation).
     If callback is provided, call it with each result as it completes.
     Returns list of all results.
+
+    Args:
+        subnet: CIDR notation (e.g. 192.168.1.0/24)
+        timeout: Ping timeout in seconds
+        max_threads: Maximum concurrent ping processes
+        count: Number of pings per host (default 1)
+        callback: Called with each result dict as it completes
     """
     try:
         network = ipaddress.ip_network(subnet, strict=False)
@@ -137,7 +145,7 @@ def ping_sweep(subnet: str, timeout: int = 1, max_threads: int = 100, callback=N
 
     with ThreadPoolExecutor(max_workers=min(max_threads, total)) as executor:
         future_to_ip = {
-            executor.submit(_ping_host, str(ip), timeout): str(ip)
+            executor.submit(_ping_host, str(ip), timeout, count): str(ip)
             for ip in hosts
         }
 

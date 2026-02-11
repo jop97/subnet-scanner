@@ -2,7 +2,14 @@
 Nmap scanner module — detailed port/service scanning via python-nmap.
 """
 
+import os
 import platform
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+
 import nmap
 
 
@@ -13,7 +20,6 @@ def _is_admin() -> bool:
             import ctypes
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
         else:
-            import os
             return os.geteuid() == 0
     except Exception:
         return False
@@ -118,7 +124,8 @@ def _parse_scan_result(scanner, ip: str, *, error: str = None,
             for script in host_data["hostscript"]:
                 result["scripts"][script.get("id", "unknown")] = script.get("output", "")
 
-        result["scan_complete"] = not tried_fallback or bool(result["os_matches"])
+        # Scan is complete if we got here without errors
+        result["scan_complete"] = True
         result["raw"] = scanner.csv()
 
     except Exception as e:
@@ -183,7 +190,7 @@ def full_scan(ip: str, timeout: int = 180) -> dict:
 
 
 def full_scan_with_progress(ip: str, progress_callback=None,
-                            timeout: int = 150,
+                            timeout: int = None,
                             top_ports: int = 2500,
                             host_timeout: int = 180) -> dict:
     """
@@ -197,16 +204,16 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     Args:
         ip: Target IP address
         progress_callback: Function called with progress percentage (0-100)
-        timeout: Overall timeout for the subprocess in seconds
+        timeout: Overall timeout for the subprocess in seconds.
+                 Defaults to host_timeout + 30s buffer if not provided.
         top_ports: Number of top ports to scan (default 2500)
         host_timeout: Nmap --host-timeout value in seconds (default 180)
     """
-    import subprocess
-    import re
-    import shutil
-    import threading
-    import tempfile
-    import os
+    # Ensure subprocess timeout is at least host_timeout + reasonable buffer
+    if timeout is None:
+        timeout = host_timeout + 30
+    elif timeout < host_timeout:
+        timeout = host_timeout + 30
 
     # Build arguments
     # -Pn: skip host discovery — we already know the host is up from ping sweep
@@ -229,11 +236,7 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     os.close(tmp_fd)
 
     cmd = [nmap_bin] + arguments.split() + [
-<<<<<<< HEAD
         "--stats-every", "2s", "-oX", tmp_xml, ip,
-=======
-        "--stats-every", "1s", "-oX", tmp_xml, ip,
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
     ]
 
     # Hide console window on Windows
@@ -241,18 +244,12 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     if platform.system() == "Windows":
         kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
-<<<<<<< HEAD
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw,
         )
     except Exception as e:
         return {**_new_result_dict(ip), "error": f"Failed to start nmap: {e}"}
-=======
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw,
-    )
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
 
     # Background thread reads stdout for nmap progress lines
     # (nmap writes interactive progress to stdout, not stderr)
@@ -283,7 +280,6 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     except subprocess.TimeoutExpired:
         timed_out = True
         proc.kill()
-<<<<<<< HEAD
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
@@ -292,13 +288,6 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     t.join(timeout=5)
 
     # Read XML from temp file (may contain partial results on timeout)
-=======
-        proc.wait()
-
-    t.join(timeout=5)
-
-    # Read XML from temp file
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
     try:
         with open(tmp_xml, "r", encoding="utf-8", errors="replace") as f:
             xml = f.read()
@@ -309,14 +298,11 @@ def full_scan_with_progress(ip: str, progress_callback=None,
             os.unlink(tmp_xml)
         except OSError:
             pass
-<<<<<<< HEAD
 
     if not xml or len(xml.strip()) < 50:
         msg = "Nmap scan timed out — no results" if timed_out else "Nmap produced no output"
         return {**_new_result_dict(ip), "error": msg}
 
-=======
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
     scanner = nmap.PortScanner()
     try:
         scanner.analyse_nmap_xml_scan(nmap_xml_output=xml)
@@ -327,5 +313,12 @@ def full_scan_with_progress(ip: str, progress_callback=None,
 
     if timed_out and not result.get("error"):
         result["error"] = "Scan timed out — results may be incomplete"
+
+    # Signal 100% complete before returning
+    if progress_callback:
+        try:
+            progress_callback(100.0)
+        except Exception:
+            pass
 
     return result

@@ -1,5 +1,5 @@
 /**
- * Subnet Scanner v1.1.7 — Frontend Controller
+ * Subnet Scanner v1.2.0 — Frontend Controller
  * Handles WebSocket communication, UI updates, grid/list views, and host detail modals.
  */
 
@@ -128,10 +128,14 @@
         deepTimeout:        5,
         ssdpTimeout:        4,
         deepHttp:           true,
-        deepSsl:            false,
-        deepBanners:        false,
-        deepSsdp:           false,
+        deepSsl:            true,
+        deepBanners:        true,
+        deepSsdp:           true,
         deepMacVendor:      true,
+        // Extended Discovery
+        deepSsh:            true,
+        deepMdns:           true,
+        deepGeo:            true,
         // Display
         autoScroll:         true,
         showOffline:        true,
@@ -219,6 +223,9 @@
             deepBanners:        document.getElementById('settingDeepBanners').checked,
             deepSsdp:           document.getElementById('settingDeepSsdp').checked,
             deepMacVendor:      document.getElementById('settingDeepMacVendor').checked,
+            deepSsh:            document.getElementById('settingDeepSsh')?.checked ?? SETTINGS_DEFAULTS.deepSsh,
+            deepMdns:           document.getElementById('settingDeepMdns')?.checked ?? SETTINGS_DEFAULTS.deepMdns,
+            deepGeo:            document.getElementById('settingDeepGeo')?.checked ?? SETTINGS_DEFAULTS.deepGeo,
             autoScroll:         document.getElementById('settingAutoScroll').checked,
             showOffline:        document.getElementById('settingShowOffline').checked,
             animations:         document.getElementById('settingAnimations').checked,
@@ -251,6 +258,12 @@
         document.getElementById('settingDeepBanners').checked   = s.deepBanners;
         document.getElementById('settingDeepSsdp').checked      = s.deepSsdp;
         document.getElementById('settingDeepMacVendor').checked = s.deepMacVendor;
+        const sshEl = document.getElementById('settingDeepSsh');
+        if (sshEl) sshEl.checked = s.deepSsh;
+        const mdnsEl = document.getElementById('settingDeepMdns');
+        if (mdnsEl) mdnsEl.checked = s.deepMdns;
+        const geoEl = document.getElementById('settingDeepGeo');
+        if (geoEl) geoEl.checked = s.deepGeo;
         document.getElementById('settingAutoScroll').checked    = s.autoScroll;
         document.getElementById('settingShowOffline').checked   = s.showOffline;
         document.getElementById('settingAnimations').checked    = s.animations;
@@ -298,7 +311,9 @@
 
     /** Build nmap arguments string for batch full scan. */
     function buildNmapArgs(s) {
-        return `-sV --top-ports ${s.nmapTopPorts} ${s.nmapTiming}`;
+        // -sV: service version, -sC: default scripts (includes hostname discovery)
+        // -O: OS detection (requires admin, backend falls back gracefully)
+        return `-sV -sC -O --top-ports ${s.nmapTopPorts} -${s.nmapTiming}`;
     }
 
     /** Apply display-related settings (animations, showOffline). */
@@ -377,7 +392,21 @@
         state.socket.on('host_detail_result', (data) => {
             clearDetailTimeout();
             if (data.ip !== state.detailIp) return;  // Stale result
-            renderHostDetail(data);
+
+            // Briefly show all phases as complete before rendering final result
+            const fill = document.getElementById('detail-progress-fill');
+            if (fill) fill.style.width = '100%';
+            for (let i = 0; i < 3; i++) {
+                const step = document.getElementById('detail-step-' + i);
+                if (step) {
+                    step.querySelector('.detail-step-icon').className = 'detail-step-icon completed';
+                    step.querySelector('.detail-step-icon i').className = 'fas fa-check';
+                    step.querySelector('.detail-step-status').innerHTML = '<span class="text-green">Done</span>';
+                }
+            }
+
+            // Small delay to show completion state before rendering result
+            setTimeout(() => renderHostDetail(data), 150);
         });
 
         state.socket.on('host_detail_error', (data) => {
@@ -489,7 +518,10 @@
         dom.btnStop().addEventListener('click', stopScan);
 
         // Clear button
-        dom.btnClear().addEventListener('click', clearResults);
+        dom.btnClear().addEventListener('click', () => {
+            state.fullScanPending = false;  // Reset when user explicitly clears
+            clearResults();
+        });
 
         // View toggle
         dom.btnGridView().addEventListener('click', () => switchView('grid'));
@@ -604,6 +636,7 @@
             scan_id: subnet,
             ping_timeout: s.pingTimeout,
             threads: s.threads,
+            ping_count: s.sweepPingCount,
         });
     }
 
@@ -647,6 +680,10 @@
 
     function clearResults() {
         state.results = {};
+        state.scanCompleted = false;
+        state.sweepProgress = 0;
+        // Note: do NOT reset fullScanPending here — it's set before startScan()
+        // and needs to persist through clearResults() to trigger deep scan after sweep
         dom.ipGrid().innerHTML = `
             <div class="empty-state" id="emptyState">
                 <div class="empty-icon"><i class="fas fa-satellite-dish"></i></div>
@@ -826,7 +863,7 @@
         row.innerHTML = `
             <td>${statusBadge}</td>
             <td><strong>${data.ip}</strong></td>
-            <td>${data.hostname || '<span class="text-muted">—</span>'}</td>
+            <td id="hostname-${data.ip.replace(/\./g, '-')}">${data.hostname || '<span class="text-muted">—</span>'}</td>
             <td>${responseTime}</td>
             <td><span class="text-muted" id="ports-${data.ip.replace(/\./g, '-')}">—</span></td>
             <td id="os-${data.ip.replace(/\./g, '-')}">${osGuess}</td>
@@ -1007,6 +1044,9 @@
             deep_banners: s.deepBanners,
             deep_ssdp: s.deepSsdp,
             deep_mac_vendor: s.deepMacVendor,
+            deep_ssh: s.deepSsh,
+            deep_mdns: s.deepMdns,
+            deep_geo: s.deepGeo,
         });
         // Start client-side timeout based on settings
         resetDetailTimeout();
@@ -1041,7 +1081,8 @@
         return [
             { icon: 'fa-network-wired', label: 'DNS, NetBIOS & WHOIS' },
             { icon: 'fa-search',        label: `Nmap scan (top ${topPorts} ports)` },
-            { icon: 'fa-shield-alt',    label: 'HTTP, SSL & banner probes' }
+            { icon: 'fa-shield-alt',    label: 'HTTP, SSL & banner probes' },
+            { icon: 'fa-satellite',     label: 'SSH, mDNS & Geolocation' }
         ];
     }
 
@@ -1266,6 +1307,9 @@
             if (!data.mac_from_arp && cached.deep.mac_from_arp) data.mac_from_arp = cached.deep.mac_from_arp;
             if (!data.mac_vendor && cached.deep.mac_vendor) data.mac_vendor = cached.deep.mac_vendor;
             if (!data.ssdp_info && cached.deep.ssdp_info) data.ssdp_info = cached.deep.ssdp_info;
+            if (!data.ssh_info && cached.deep.ssh_info) data.ssh_info = cached.deep.ssh_info;
+            if (!data.mdns_info && cached.deep.mdns_info) data.mdns_info = cached.deep.mdns_info;
+            if (!data.geolocation && cached.deep.geolocation) data.geolocation = cached.deep.geolocation;
         }
         // Merge response_time from cached ping data
         if (cached && cached.response_time !== undefined && data.response_time === undefined) {
@@ -1697,6 +1741,117 @@
             </div>`;
         }
 
+        // ── SSH Host Key
+        if (data.ssh_info && (data.ssh_info.banner || data.ssh_info.fingerprint)) {
+            const port = data.ssh_info.port ? ` <span class="text-muted">(port ${data.ssh_info.port})</span>` : '';
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-key"></i> SSH Host Key${port}</div>
+                <div class="detail-grid">`;
+            if (data.ssh_info.banner) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Banner</div>
+                        <div class="value"><code style="color:var(--text);background:rgba(0,0,0,0.3);padding:4px 8px;border-radius:4px;font-size:0.8rem;">${escapeHtml(data.ssh_info.banner)}</code></div>
+                    </div>`;
+            }
+            if (data.ssh_info.fingerprint) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Fingerprint (SHA256)</div>
+                        <div class="value"><code style="color:var(--text-cyan);background:rgba(0,0,0,0.3);padding:4px 8px;border-radius:4px;font-size:0.75rem;word-break:break-all;">${escapeHtml(data.ssh_info.fingerprint)}</code></div>
+                    </div>`;
+            }
+            if (data.ssh_info.key_type) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Key Type</div>
+                        <div class="value">${escapeHtml(data.ssh_info.key_type)}</div>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        }
+
+        // ── mDNS / Bonjour
+        if (data.mdns_info && data.mdns_info.hostname) {
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-broadcast-tower"></i> mDNS / Bonjour</div>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <div class="label">Hostname</div>
+                        <div class="value">${escapeHtml(data.mdns_info.hostname)}</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        // ── Geolocation (Public IPs)
+        if (data.geolocation && data.geolocation.country) {
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-globe-americas"></i> Geolocation</div>
+                <div class="detail-grid">`;
+            if (data.geolocation.country) {
+                const flag = data.geolocation.country_code ? ` <span class="text-muted">(${data.geolocation.country_code})</span>` : '';
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Country</div>
+                        <div class="value">${escapeHtml(data.geolocation.country)}${flag}</div>
+                    </div>`;
+            }
+            if (data.geolocation.region) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Region</div>
+                        <div class="value">${escapeHtml(data.geolocation.region)}</div>
+                    </div>`;
+            }
+            if (data.geolocation.city) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">City</div>
+                        <div class="value">${escapeHtml(data.geolocation.city)}</div>
+                    </div>`;
+            }
+            if (data.geolocation.isp) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">ISP</div>
+                        <div class="value">${escapeHtml(data.geolocation.isp)}</div>
+                    </div>`;
+            }
+            if (data.geolocation.org) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Organization</div>
+                        <div class="value">${escapeHtml(data.geolocation.org)}</div>
+                    </div>`;
+            }
+            if (data.geolocation.as) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">AS Number</div>
+                        <div class="value">${escapeHtml(data.geolocation.as)}</div>
+                    </div>`;
+            }
+            if (data.geolocation.lat && data.geolocation.lon) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Coordinates</div>
+                        <div class="value">${data.geolocation.lat}, ${data.geolocation.lon}</div>
+                    </div>`;
+            }
+            if (data.geolocation.timezone) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Timezone</div>
+                        <div class="value">${escapeHtml(data.geolocation.timezone)}</div>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        }
+
         // Error notice
         if (data.error) {
             html += `
@@ -1891,9 +2046,14 @@
         dom.progressFill().style.width = '0%';
 
         const s = getSettings();
+        // Calculate timeout based on timing template
+        // T5=30s, T4=60s, T3=90s, T2=120s, T1=150s
+        const timingTimeouts = { T5: 30, T4: 60, T3: 90, T2: 120, T1: 150 };
+        const nmapTimeout = timingTimeouts[s.nmapTiming] || 60;
         state.socket.emit('batch_full_scan', {
             ips: onlineIps,
             nmap_args:      buildNmapArgs(s),
+            nmap_timeout:   nmapTimeout,
             deep_timeout:   s.deepTimeout,
             ssdp_timeout:   s.ssdpTimeout,
             deep_http:      s.deepHttp,
@@ -1901,6 +2061,9 @@
             deep_banners:   s.deepBanners,
             deep_ssdp:      s.deepSsdp,
             deep_mac_vendor: s.deepMacVendor,
+            deep_ssh:       s.deepSsh,
+            deep_mdns:      s.deepMdns,
+            deep_geo:       s.deepGeo,
         });
     }
 
@@ -1913,6 +2076,15 @@
         if (state.results[data.ip]) {
             state.results[data.ip].deep = data;
             if (data.open_ports) state.results[data.ip].open_ports = data.open_ports;
+            if (data.hostname) state.results[data.ip].hostname = data.hostname;
+        }
+
+        // Hostname — update if nmap found one
+        if (data.hostname) {
+            const hostnameEl = document.getElementById('hostname-' + ipKey);
+            if (hostnameEl) {
+                hostnameEl.textContent = data.hostname;
+            }
         }
 
         // Open Ports
