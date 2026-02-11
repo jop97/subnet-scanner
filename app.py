@@ -1,5 +1,5 @@
 """
-Subnet Scanner — Flask Application
+Subnet Scanner v1.1.0 — Flask Application
 A modern network scanning web application.
 """
 

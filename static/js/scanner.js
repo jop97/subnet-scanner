@@ -1,5 +1,5 @@
 /**
- * Subnet Scanner — Frontend Controller
+ * Subnet Scanner v1.1.0 — Frontend Controller
  * Handles WebSocket communication, UI updates, grid/list views, and host detail modals.
  */
 
@@ -722,6 +722,16 @@
             state.dataTable = null;
         }
 
+        // Custom IP address sorting (numeric octets)
+        if ($.fn.dataTable && !$.fn.dataTable.ext.type.order['ip-address-pre']) {
+            $.fn.dataTable.ext.type.order['ip-address-pre'] = function (d) {
+                const text = $('<span>').html(d).text();
+                const m = text.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)/);
+                if (!m) return 0;
+                return ((+m[1]) * 16777216) + ((+m[2]) * 65536) + ((+m[3]) * 256) + (+m[4]);
+            };
+        }
+
         const rowCount = document.querySelectorAll('#resultsTable tbody tr').length;
         if (rowCount > 0) {
             state.dataTable = $('#resultsTable').DataTable({
@@ -730,6 +740,9 @@
                 searching: true,
                 responsive: true,
                 order: [[1, 'asc']],
+                columnDefs: [
+                    { type: 'ip-address', targets: 1 },
+                ],
                 dom: '<"row"<"col-sm-12"f>>rt',
                 language: {
                     search: '<i class="fas fa-search mr-1"></i>',

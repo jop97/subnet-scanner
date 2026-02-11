@@ -1,7 +1,8 @@
-﻿# Subnet Scanner
+﻿# Subnet Scanner v1.1.0
 
 A real-time network scanning web application built with Flask, Socket.IO, and Nmap. Discover hosts on your network with a clean dark UI featuring a visual IP grid, live status updates, and detailed host information.
 
+![Version](https://img.shields.io/badge/Version-1.1.0-cyan)
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.x-green?logo=flask&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -24,6 +25,7 @@ A real-time network scanning web application built with Flask, Socket.IO, and Nm
 - [Troubleshooting](#troubleshooting)
 - [Security Considerations](#security-considerations)
 - [Contributing](#contributing)
+- [Changelog](#changelog)
 - [License](#license)
 
 ---
@@ -358,9 +360,10 @@ subnet-scanner/
     +-- css/
     |   +-- custom.css     # Complete dark theme (1400+ lines)
     +-- js/
-        +-- scanner.js     # Frontend controller (1700+ lines)
+        +-- scanner.js     # Frontend controller (1750+ lines)
                            # WebSocket, state, grid/list rendering,
-                           # DataTable, live update, host detail modal,
+                           # DataTable (with natural IP sort),
+                           # live update, host detail modal,
                            # well-known port names, comprehensive
                            # host detail rendering
 ```
@@ -403,7 +406,22 @@ Toggle **Live Update** to continuously re-ping all discovered hosts. Configurabl
 
 ### 5. Host Detail
 
-Click any host to open the detail modal. Runs Nmap + deep scan probes automatically, showing ports, services, OS, DNS, MAC/vendor, HTTP info, SSL certs, banners, SSDP device info, and NSE scripts.
+Click any host to open the detail modal. Runs a full Nmap scan (top 1000 ports, `-sV -sC`) + deep scan probes + WHOIS lookup automatically. The modal shows everything collected:
+
+- **Basic info** — IP, status, hostname, response time, reverse DNS, MAC (styled code block), vendor (OUI), NetBIOS, workgroup
+- **All hostnames** — Full nmap hostname array with type labels (PTR, user, etc.)
+- **UPnP / SSDP** — Server, location, services list
+- **DNS** — DNS names, PTR records
+- **OS detection** — Up to 5 matches with accuracy, plus OS classes (type, vendor, family, generation, CPE)
+- **Ports & services table** — Port (with protocol name tags), proto, state, service, product, version, extra info. Expandable per-port CPE identifiers and NSE script output inline.
+- **HTTP info** — Status code, server, powered-by, page title, content-type, redirect, full response headers (with port indicator)
+- **HTTPS info** — Same as HTTP but for HTTPS connections (separate section)
+- **SSL/TLS certificate** — Protocol, cipher, subject, issuer, validity dates, SANs (with port indicator)
+- **Service banners** — Raw TCP banners with protocol names for known ports
+- **NSE host scripts** — Host-level nmap script output
+- **System info** — Uptime (human-readable ‘d h m’ format + raw seconds), last boot, TCP sequence prediction (class, difficulty, index, values)
+- **WHOIS** — Raw WHOIS data in scrollable panel
+- **Error notices** — Inline alerts for scan errors or limited data warnings
 
 ---
 

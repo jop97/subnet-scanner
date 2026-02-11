@@ -835,7 +835,7 @@ select.form-input {
 
 .table td {
     padding: 10px 16px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.025);
     vertical-align: middle;
     font-size: 0.82rem;
 }
