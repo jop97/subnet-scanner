@@ -107,10 +107,10 @@
         const dot = dom.connectionDot();
         const text = dom.connectionText();
         if (connected) {
-            dot.className = 'fas fa-circle text-success';
+            dot.className = 'conn-dot connected';
             text.textContent = 'Connected';
         } else {
-            dot.className = 'fas fa-circle text-danger';
+            dot.className = 'conn-dot disconnected';
             text.textContent = 'Disconnected';
         }
     }
