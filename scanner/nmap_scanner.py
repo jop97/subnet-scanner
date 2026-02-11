@@ -229,11 +229,7 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     os.close(tmp_fd)
 
     cmd = [nmap_bin] + arguments.split() + [
-<<<<<<< HEAD
         "--stats-every", "2s", "-oX", tmp_xml, ip,
-=======
-        "--stats-every", "1s", "-oX", tmp_xml, ip,
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
     ]
 
     # Hide console window on Windows
@@ -241,18 +237,12 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     if platform.system() == "Windows":
         kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
-<<<<<<< HEAD
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw,
         )
     except Exception as e:
         return {**_new_result_dict(ip), "error": f"Failed to start nmap: {e}"}
-=======
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw,
-    )
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
 
     # Background thread reads stdout for nmap progress lines
     # (nmap writes interactive progress to stdout, not stderr)
@@ -283,7 +273,6 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     except subprocess.TimeoutExpired:
         timed_out = True
         proc.kill()
-<<<<<<< HEAD
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
@@ -292,13 +281,6 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     t.join(timeout=5)
 
     # Read XML from temp file (may contain partial results on timeout)
-=======
-        proc.wait()
-
-    t.join(timeout=5)
-
-    # Read XML from temp file
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
     try:
         with open(tmp_xml, "r", encoding="utf-8", errors="replace") as f:
             xml = f.read()
@@ -309,14 +291,11 @@ def full_scan_with_progress(ip: str, progress_callback=None,
             os.unlink(tmp_xml)
         except OSError:
             pass
-<<<<<<< HEAD
 
     if not xml or len(xml.strip()) < 50:
         msg = "Nmap scan timed out — no results" if timed_out else "Nmap produced no output"
         return {**_new_result_dict(ip), "error": msg}
 
-=======
->>>>>>> 8b4c3a574bd87ad1ed04a14b3266db8bda315c4e
     scanner = nmap.PortScanner()
     try:
         scanner.analyse_nmap_xml_scan(nmap_xml_output=xml)
