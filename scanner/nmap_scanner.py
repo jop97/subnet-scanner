@@ -297,6 +297,8 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     import re
     import shutil
     import threading
+    import tempfile
+    import os
 
     # Build arguments (same logic as full_scan)
     if _is_admin():
@@ -312,8 +314,12 @@ def full_scan_with_progress(ip: str, progress_callback=None,
     if not nmap_bin:
         return {**_new_result_dict(ip), "error": "nmap not found on PATH"}
 
+    # Write XML to a temp file so stdout is free for progress lines
+    tmp_fd, tmp_xml = tempfile.mkstemp(suffix=".xml", prefix="nmap_")
+    os.close(tmp_fd)
+
     cmd = [nmap_bin] + arguments.split() + [
-        "--stats-every", "1s", "-oX", "-", ip,
+        "--stats-every", "1s", "-oX", tmp_xml, ip,
     ]
 
     # Hide console window on Windows
@@ -322,33 +328,45 @@ def full_scan_with_progress(ip: str, progress_callback=None,
         kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw,
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw,
     )
 
-    # Background thread reads stderr for nmap progress lines
+    # Background thread reads stdout for nmap progress lines
+    # (nmap writes interactive progress to stdout, not stderr)
     pct_re = re.compile(r"About (\d+\.?\d*)% done")
 
-    def _read_stderr():
+    def _read_progress():
         try:
-            for raw in proc.stderr:
-                m = pct_re.search(raw.decode("utf-8", errors="replace"))
+            for raw in proc.stdout:
+                line = raw.decode("utf-8", errors="replace")
+                m = pct_re.search(line)
                 if m and progress_callback:
                     progress_callback(float(m.group(1)))
         except Exception:
             pass
 
-    t = threading.Thread(target=_read_stderr, daemon=True)
+    t = threading.Thread(target=_read_progress, daemon=True)
     t.start()
 
     try:
-        stdout_data, _ = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
-        stdout_data, _ = proc.communicate()
+        proc.wait()
 
     t.join(timeout=5)
 
-    xml = stdout_data.decode("utf-8", errors="replace")
+    # Read XML from temp file
+    try:
+        with open(tmp_xml, "r", encoding="utf-8", errors="replace") as f:
+            xml = f.read()
+    except Exception as e:
+        return {**_new_result_dict(ip), "error": f"Failed to read nmap XML: {e}"}
+    finally:
+        try:
+            os.unlink(tmp_xml)
+        except OSError:
+            pass
     scanner = nmap.PortScanner()
     try:
         scanner.analyse_nmap_xml_scan(nmap_xml_output=xml)
