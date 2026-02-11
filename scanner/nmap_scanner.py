@@ -2,13 +2,35 @@
 Nmap scanner module — detailed port/service scanning via python-nmap.
 """
 
+import platform
 import nmap
+
+
+def _is_admin() -> bool:
+    """Check if the current process has admin/root privileges."""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        else:
+            import os
+            return os.geteuid() == 0
+    except Exception:
+        return False
 
 
 def scan_host(ip: str, arguments: str = "-sV -sC -O --top-ports 100", timeout: int = 60) -> dict:
     """
     Run an nmap scan on a single host and return rich information.
+    Falls back to non-privileged arguments if OS detection fails.
+    On Windows without admin, --unprivileged is added automatically
+    to prevent UAC / Npcap admin helper popups.
     """
+    # On Windows without admin, force unprivileged mode (connect scan)
+    # to avoid UAC / Npcap admin helper popups
+    if platform.system() == "Windows" and not _is_admin() and "--unprivileged" not in arguments:
+        arguments += " --unprivileged"
+
     scanner = nmap.PortScanner()
     result = {
         "ip": ip,
@@ -28,9 +50,33 @@ def scan_host(ip: str, arguments: str = "-sV -sC -O --top-ports 100", timeout: i
         "error": None,
     }
 
+    # If not admin and arguments contain OS detection, try with it first
+    # and fall back without it on failure
+    tried_fallback = False
+
     try:
         scanner.scan(hosts=ip, arguments=arguments, timeout=timeout)
+    except nmap.PortScannerError as e:
+        error_msg = str(e)
+        # OS detection requires privileges — retry without -O and -A
+        if ("-O" in arguments or "-A" in arguments) and ("requires root" in error_msg.lower() or "privilege" in error_msg.lower() or "raw socket" in error_msg.lower()):
+            tried_fallback = True
+            fallback_args = arguments.replace("-O", "").replace("-A", "").strip()
+            fallback_args = " ".join(fallback_args.split())  # clean up double spaces
+            try:
+                scanner.scan(hosts=ip, arguments=fallback_args, timeout=timeout)
+                result["error"] = "OS detection requires admin privileges — skipped."
+            except Exception as e2:
+                result["error"] = f"Nmap error: {str(e2)}"
+                return result
+        else:
+            result["error"] = f"Nmap error: {error_msg}"
+            return result
+    except Exception as e:
+        result["error"] = f"Scan error: {str(e)}"
+        return result
 
+    try:
         if ip not in scanner.all_hosts():
             result["error"] = "Host not found in scan results"
             return result
@@ -105,13 +151,11 @@ def scan_host(ip: str, arguments: str = "-sV -sC -O --top-ports 100", timeout: i
             for script in host_data["hostscript"]:
                 result["scripts"][script.get("id", "unknown")] = script.get("output", "")
 
-        result["scan_complete"] = True
+        result["scan_complete"] = not tried_fallback or bool(result["os_matches"])
         result["raw"] = scanner.csv()
 
-    except nmap.PortScannerError as e:
-        result["error"] = f"Nmap error: {str(e)}"
     except Exception as e:
-        result["error"] = f"Scan error: {str(e)}"
+        result["error"] = f"Parse error: {str(e)}"
 
     return result
 
@@ -121,6 +165,11 @@ def quick_scan(ip: str, timeout: int = 30) -> dict:
     return scan_host(ip, arguments="-sV --top-ports 20 -T4", timeout=timeout)
 
 
-def full_scan(ip: str, timeout: int = 120) -> dict:
-    """Full scan — all common ports with OS detection and scripts."""
-    return scan_host(ip, arguments="-sV -sC -O -A --top-ports 1000", timeout=timeout)
+def full_scan(ip: str, timeout: int = 180) -> dict:
+    """Full scan — common ports with OS detection and scripts (if admin)."""
+    if _is_admin():
+        return scan_host(ip, arguments="-sV -sC -O -A --top-ports 1000", timeout=timeout)
+    else:
+        # Without admin, skip -O and -A which need raw sockets
+        # --unprivileged is added automatically by scan_host() on Windows
+        return scan_host(ip, arguments="-sV -sC --top-ports 1000", timeout=timeout)

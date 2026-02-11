@@ -7,37 +7,71 @@ import platform
 import ipaddress
 import time
 import socket
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def _ping_host(ip: str, timeout: int = 1) -> dict:
+def _ttl_os_guess(ttl):
+    """Guess OS family from ping TTL value."""
+    if ttl is None:
+        return None
+    ttl = int(ttl)
+    if ttl <= 64:
+        return "Linux/Unix"
+    elif ttl <= 128:
+        return "Windows"
+    elif ttl <= 255:
+        return "Network Device"
+    return None
+
+
+def _ping_host(ip: str, timeout: int = 1, count: int = 1) -> dict:
     """Ping a single host and return result dict."""
     ip_str = str(ip)
     start = time.perf_counter()
 
-    param = "-n" if platform.system().lower() == "windows" else "-c"
-    timeout_flag = "-w" if platform.system().lower() == "windows" else "-W"
+    is_windows = platform.system().lower() == "windows"
+    param = "-n" if is_windows else "-c"
+    timeout_flag = "-w" if is_windows else "-W"
+    # Windows -w expects milliseconds; Linux/Mac -W expects seconds
+    timeout_value = str(timeout * 1000) if is_windows else str(timeout)
+    ping_count = str(count) if count else "1"
 
     try:
         result = subprocess.run(
-            ["ping", param, "1", timeout_flag, str(timeout), ip_str],
+            ["ping", param, ping_count, timeout_flag, timeout_value, ip_str],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=timeout + 2,
+            timeout=(timeout * count) + 4,
         )
         elapsed = round((time.perf_counter() - start) * 1000, 2)
+
+        # For multi-ping, alive if ANY reply received (returncode 0)
+        # On Windows with -n >1, returncode 0 even if some pings lost
         alive = result.returncode == 0
 
-        # Parse response time from ping output
+        # Parse response time from ping output (average if multiple)
         response_time = None
+        ttl = None
         if alive:
             output = result.stdout.decode("utf-8", errors="ignore")
+            times = []
             for part in output.split():
                 if part.startswith("time=") or part.startswith("time<"):
                     try:
-                        response_time = float(part.split("=")[-1].replace("ms", "").replace("<", ""))
+                        t = float(part.split("=")[-1].replace("ms", "").replace("<", ""))
+                        times.append(t)
                     except ValueError:
-                        response_time = elapsed
+                        pass
+            if times:
+                response_time = round(sum(times) / len(times), 2)
+            else:
+                response_time = elapsed
+
+            # Parse TTL for OS fingerprinting
+            ttl_match = re.search(r"ttl[=](\d+)", output, re.IGNORECASE)
+            if ttl_match:
+                ttl = int(ttl_match.group(1))
 
         # Try reverse DNS
         hostname = None
@@ -52,6 +86,8 @@ def _ping_host(ip: str, timeout: int = 1) -> dict:
             "response_time": response_time,
             "hostname": hostname,
             "elapsed": elapsed,
+            "ttl": ttl,
+            "ttl_os_guess": _ttl_os_guess(ttl),
         }
 
     except subprocess.TimeoutExpired:
@@ -61,6 +97,8 @@ def _ping_host(ip: str, timeout: int = 1) -> dict:
             "response_time": None,
             "hostname": None,
             "elapsed": None,
+            "ttl": None,
+            "ttl_os_guess": None,
         }
     except Exception as e:
         return {
@@ -69,6 +107,8 @@ def _ping_host(ip: str, timeout: int = 1) -> dict:
             "response_time": None,
             "hostname": None,
             "elapsed": None,
+            "ttl": None,
+            "ttl_os_guess": None,
             "error": str(e),
         }
 

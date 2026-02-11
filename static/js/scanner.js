@@ -16,13 +16,16 @@
         currentView: 'grid',
         dataTable: null,
         detailIp: null,
+        liveUpdate: false,
+        liveTimeout: null,
+        scanCompleted: false,  // true after first scan is done
+        fullScanPending: false, // true when Full Scan button was clicked
     };
 
     // ── DOM References ──────────────────────────────────────────────────────
     const dom = {
         scanForm:        () => document.getElementById('scanForm'),
         subnetInput:     () => document.getElementById('subnetInput'),
-        presetSelect:    () => document.getElementById('presetSelect'),
         btnScan:         () => document.getElementById('btnScan'),
         btnStop:         () => document.getElementById('btnStop'),
         btnClear:        () => document.getElementById('btnClear'),
@@ -36,7 +39,8 @@
         statTotal:       () => document.getElementById('statTotal'),
         statOnline:      () => document.getElementById('statOnline'),
         statOffline:     () => document.getElementById('statOffline'),
-        statProgress:    () => document.getElementById('statProgress'),
+        statusText:      () => document.getElementById('statusText'),
+        statusCard:      () => document.getElementById('statusCard'),
         progressFill:    () => document.getElementById('progressFill'),
         connectionDot:   () => document.getElementById('connectionDot'),
         connectionText:  () => document.getElementById('connectionText'),
@@ -44,12 +48,173 @@
         hostDetailTitle: () => document.getElementById('hostDetailTitle'),
         hostDetailBody:  () => document.getElementById('hostDetailBody'),
         btnFullScan:     () => document.getElementById('btnFullScan'),
+        btnFullScanMain: () => document.getElementById('btnFullScanMain'),
     };
+
+    // ── Well-Known Port → Protocol Map ────────────────────────────────────
+    const WELL_KNOWN_PORTS = {
+        20: 'FTP-Data', 21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP',
+        53: 'DNS', 67: 'DHCP', 68: 'DHCP', 69: 'TFTP', 80: 'HTTP',
+        110: 'POP3', 111: 'RPC', 119: 'NNTP', 123: 'NTP', 135: 'RPC',
+        137: 'NetBIOS', 138: 'NetBIOS', 139: 'NetBIOS', 143: 'IMAP',
+        161: 'SNMP', 162: 'SNMP', 389: 'LDAP', 443: 'HTTPS', 445: 'SMB',
+        465: 'SMTPS', 514: 'Syslog', 515: 'LPD', 520: 'RIP', 546: 'DHCPv6',
+        547: 'DHCPv6', 587: 'SMTP', 631: 'IPP', 636: 'LDAPS', 993: 'IMAPS',
+        995: 'POP3S', 1080: 'SOCKS', 1433: 'MSSQL', 1434: 'MSSQL',
+        1521: 'Oracle', 1723: 'PPTP', 1883: 'MQTT', 2049: 'NFS',
+        2181: 'ZooKeeper', 3306: 'MySQL', 3389: 'RDP', 3478: 'STUN',
+        5060: 'SIP', 5432: 'PostgreSQL', 5672: 'AMQP', 5900: 'VNC',
+        5984: 'CouchDB', 6379: 'Redis', 6443: 'K8s-API', 8080: 'HTTP-Alt',
+        8443: 'HTTPS-Alt', 8883: 'MQTT-TLS', 8888: 'HTTP-Alt',
+        9090: 'Prometheus', 9092: 'Kafka', 9200: 'Elasticsearch',
+        9418: 'Git', 11211: 'Memcached', 27017: 'MongoDB',
+        5353: 'mDNS', 548: 'AFP', 554: 'RTSP', 873: 'Rsync',
+        1194: 'OpenVPN', 1701: 'L2TP', 5222: 'XMPP', 5269: 'XMPP',
+        6660: 'IRC', 6667: 'IRC', 6697: 'IRC-TLS',
+        8000: 'HTTP-Alt', 8081: 'HTTP-Alt', 8008: 'HTTP-Alt',
+        8443: 'HTTPS-Alt', 9000: 'HTTP-Alt', 9443: 'HTTPS-Alt',
+        50000: 'SAP', 50070: 'HDFS', 27018: 'MongoDB', 27019: 'MongoDB',
+    };
+
+    /**
+     * Format a port number for display.
+     * Well-known ports get their protocol name, others get the raw number.
+     * Returns an HTML string with appropriate styling.
+     */
+    function formatPortTag(port) {
+        const num = parseInt(port, 10);
+        const proto = WELL_KNOWN_PORTS[num];
+        if (proto) {
+            return `<span class="port-tag port-tag-known" title="Port ${num}">${proto}</span>`;
+        }
+        return `<span class="port-tag">${num}</span>`;
+    }
+
+    /**
+     * Render an array of port numbers as HTML tags.
+     * @param {number[]} ports - array of port numbers
+     * @param {number} [max=5] - max ports to show
+     */
+    function renderPortTags(ports, max) {
+        max = max || 5;
+        let html = ports.slice(0, max).map(p => formatPortTag(p)).join(' ');
+        if (ports.length > max) {
+            html += ` <span class="text-muted">+${ports.length - max}</span>`;
+        }
+        return html;
+    }
+
+    // ── Settings Defaults & Persistence ────────────────────────────────────
+    const SETTINGS_KEY = 'subnetScannerSettings';
+
+    const SETTINGS_DEFAULTS = {
+        // Quick Sweep
+        pingTimeout:    1000,
+        threads:        50,
+        // Full Scan
+        nmapArgs:       '-sV --top-ports 20 -T4',
+        nmapTopPorts:   '20',
+        deepTimeout:    5,
+        ssdpTimeout:    4,
+        deepHttp:       true,
+        deepSsl:        true,
+        deepBanners:    true,
+        deepSsdp:       true,
+        deepMacVendor:  true,
+        // Display
+        autoScroll:     true,
+        showOffline:    true,
+        animations:     true,
+        // Notifications
+        toasts:         true,
+        sounds:         false,
+        // Live Update
+        liveInterval:   '60',
+        livePingCount:  2,
+    };
+
+    /** Read settings from localStorage or return defaults. */
+    function loadSettings() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+            return saved ? Object.assign({}, SETTINGS_DEFAULTS, saved) : Object.assign({}, SETTINGS_DEFAULTS);
+        } catch (e) {
+            return Object.assign({}, SETTINGS_DEFAULTS);
+        }
+    }
+
+    /** Write current UI values to localStorage. */
+    function saveSettings() {
+        const s = readSettingsFromUI();
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+    }
+
+    /** Gather all setting values from the DOM inputs. */
+    function readSettingsFromUI() {
+        return {
+            pingTimeout:    parseInt(document.getElementById('settingTimeout').value, 10) || SETTINGS_DEFAULTS.pingTimeout,
+            threads:        parseInt(document.getElementById('settingThreads').value, 10) || SETTINGS_DEFAULTS.threads,
+            nmapArgs:       document.getElementById('settingNmapArgs').value.trim() || SETTINGS_DEFAULTS.nmapArgs,
+            nmapTopPorts:   document.getElementById('settingNmapTopPorts').value,
+            deepTimeout:    parseInt(document.getElementById('settingDeepTimeout').value, 10) || SETTINGS_DEFAULTS.deepTimeout,
+            ssdpTimeout:    parseInt(document.getElementById('settingSsdpTimeout').value, 10) || SETTINGS_DEFAULTS.ssdpTimeout,
+            deepHttp:       document.getElementById('settingDeepHttp').checked,
+            deepSsl:        document.getElementById('settingDeepSsl').checked,
+            deepBanners:    document.getElementById('settingDeepBanners').checked,
+            deepSsdp:       document.getElementById('settingDeepSsdp').checked,
+            deepMacVendor:  document.getElementById('settingDeepMacVendor').checked,
+            autoScroll:     document.getElementById('settingAutoScroll').checked,
+            showOffline:    document.getElementById('settingShowOffline').checked,
+            animations:     document.getElementById('settingAnimations').checked,
+            toasts:         document.getElementById('settingToasts').checked,
+            sounds:         document.getElementById('settingSounds').checked,
+            liveInterval:   document.getElementById('settingLiveInterval').value,
+            livePingCount:  parseInt(document.getElementById('settingLivePingCount').value, 10) || SETTINGS_DEFAULTS.livePingCount,
+        };
+    }
+
+    /** Apply a settings object to all DOM inputs. */
+    function applySettingsToUI(s) {
+        document.getElementById('settingTimeout').value       = s.pingTimeout;
+        document.getElementById('settingThreads').value       = s.threads;
+        document.getElementById('settingNmapArgs').value      = s.nmapArgs;
+        document.getElementById('settingNmapTopPorts').value  = s.nmapTopPorts;
+        document.getElementById('settingDeepTimeout').value   = s.deepTimeout;
+        document.getElementById('settingSsdpTimeout').value   = s.ssdpTimeout;
+        document.getElementById('settingDeepHttp').checked    = s.deepHttp;
+        document.getElementById('settingDeepSsl').checked     = s.deepSsl;
+        document.getElementById('settingDeepBanners').checked = s.deepBanners;
+        document.getElementById('settingDeepSsdp').checked    = s.deepSsdp;
+        document.getElementById('settingDeepMacVendor').checked = s.deepMacVendor;
+        document.getElementById('settingAutoScroll').checked  = s.autoScroll;
+        document.getElementById('settingShowOffline').checked = s.showOffline;
+        document.getElementById('settingAnimations').checked  = s.animations;
+        document.getElementById('settingToasts').checked      = s.toasts;
+        document.getElementById('settingSounds').checked      = s.sounds;
+        document.getElementById('settingLiveInterval').value  = s.liveInterval;
+        document.getElementById('settingLivePingCount').value = s.livePingCount;
+
+        // Apply display effects immediately
+        applyDisplaySettings(s);
+    }
+
+    /** Apply display-related settings (animations, showOffline). */
+    function applyDisplaySettings(s) {
+        document.body.classList.toggle('no-animations', !s.animations);
+    }
+
+    /** Get current settings object (from UI). */
+    function getSettings() {
+        return readSettingsFromUI();
+    }
 
     // ── Initialize ──────────────────────────────────────────────────────────
     function init() {
+        applySettingsToUI(loadSettings());
         connectSocket();
         bindEvents();
+        // Disable live update toggle until first scan completes
+        setLiveUpdateEnabled(false);
     }
 
     // ── WebSocket ───────────────────────────────────────────────────────────
@@ -71,6 +236,8 @@
         state.socket.on('scan_started', (data) => {
             console.log('Scan started:', data.subnet);
             showToast('Scan started for ' + data.subnet, 'info');
+            setStatus('Sweeping...', 'scanning');
+            dom.progressFill().style.width = '0%';
         });
 
         state.socket.on('host_result', (data) => {
@@ -87,6 +254,8 @@
 
         state.socket.on('scan_stopped', () => {
             setScanningState(false);
+            setStatus('Stopped', 'idle');
+            dom.progressFill().style.width = '0%';
             showToast('Scan stopped', 'warning');
         });
 
@@ -100,6 +269,80 @@
 
         state.socket.on('host_detail_error', (data) => {
             showDetailError(data.error);
+        });
+
+        state.socket.on('live_update_result', (data) => {
+            handleLiveUpdateResult(data);
+        });
+
+        state.socket.on('live_update_progress', (data) => {
+            if (state.liveUpdate) {
+                setStatus('Pinging ' + data.done + '/' + data.total, 'live');
+                dom.progressFill().style.width = data.progress + '%';
+            }
+        });
+
+        state.socket.on('live_update_complete', () => {
+            if (state.liveUpdate) {
+                const interval = (parseInt(document.getElementById('settingLiveInterval').value, 10) || 60) * 1000;
+                setStatus('Live • Next in ' + Math.round(interval / 1000) + 's', 'live');
+                dom.progressFill().style.width = '100%';
+                setTimeout(() => { dom.progressFill().style.width = '0%'; }, 1500);
+                // Schedule next round after the configured delay
+                state.liveTimeout = setTimeout(() => {
+                    if (state.liveUpdate) runLiveUpdate();
+                }, interval);
+            }
+        });
+
+        // Batch nmap scan events
+        state.socket.on('batch_nmap_result', (data) => {
+            handleBatchNmapResult(data);
+        });
+
+        state.socket.on('batch_nmap_progress', (data) => {
+            setStatus('Nmap ' + data.done + '/' + data.total, 'scanning');
+            dom.progressFill().style.width = data.progress + '%';
+        });
+
+        state.socket.on('batch_nmap_complete', () => {
+            state.scanning = false;
+            const btn = dom.btnFullScanMain();
+            btn.innerHTML = '<i class="fas fa-crosshairs mr-2"></i>Full Scan';
+            btn.disabled = false;
+            setStatus('Done ✔', 'done');
+            dom.progressFill().style.width = '100%';
+            setTimeout(() => { dom.progressFill().style.width = '0%'; }, 1500);
+            showToast('Nmap scan complete — all hosts scanned', 'success');
+            playScanCompleteSound();
+            setScanningState(false);
+            setLiveUpdateEnabled(true);
+            initDataTable();
+        });
+
+        // Batch full scan (nmap + deep probes) events
+        state.socket.on('batch_full_scan_result', (data) => {
+            handleBatchFullScanResult(data);
+        });
+
+        state.socket.on('batch_full_scan_progress', (data) => {
+            setStatus('Deep Scan ' + data.done + '/' + data.total, 'scanning');
+            dom.progressFill().style.width = data.progress + '%';
+        });
+
+        state.socket.on('batch_full_scan_complete', () => {
+            state.scanning = false;
+            const btn = dom.btnFullScanMain();
+            btn.innerHTML = '<i class="fas fa-crosshairs mr-2"></i>Full Scan';
+            btn.disabled = false;
+            setScanningState(false);
+            setStatus('Done ✔', 'done');
+            dom.progressFill().style.width = '100%';
+            setTimeout(() => { dom.progressFill().style.width = '0%'; }, 1500);
+            showToast('Full scan complete — all hosts deep-scanned', 'success');
+            playScanCompleteSound();
+            setLiveUpdateEnabled(true);
+            initDataTable();
         });
     }
 
@@ -123,13 +366,6 @@
             startScan();
         });
 
-        // Preset select
-        dom.presetSelect().addEventListener('change', (e) => {
-            if (e.target.value) {
-                dom.subnetInput().value = e.target.value;
-            }
-        });
-
         // Stop button
         dom.btnStop().addEventListener('click', stopScan);
 
@@ -141,9 +377,9 @@
         dom.btnListView().addEventListener('click', () => switchView('list'));
 
         // Filter buttons
-        document.querySelectorAll('.filter-btn').forEach(btn => {
+        document.querySelectorAll('.btn-filter').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
                 e.target.classList.add('active');
                 state.currentFilter = e.target.dataset.filter;
                 applyFilter();
@@ -157,6 +393,9 @@
             }
         });
 
+        // Full Scan button (next to Start Scan)
+        dom.btnFullScanMain().addEventListener('click', startFullScan);
+
         // Keyboard shortcut
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && e.ctrlKey) {
@@ -167,6 +406,48 @@
                 stopScan();
             }
         });
+
+        // Live update toggle
+        document.getElementById('settingLiveUpdate').addEventListener('change', (e) => {
+            state.liveUpdate = e.target.checked;
+            if (state.liveUpdate) {
+                startLiveUpdate();
+            } else {
+                stopLiveUpdate();
+            }
+        });
+
+        // Settings modal — auto-save on every change
+        const settingsModal = document.getElementById('settingsModal');
+        if (settingsModal) {
+            settingsModal.querySelectorAll('input, select').forEach(el => {
+                el.addEventListener('change', () => {
+                    saveSettings();
+                    applyDisplaySettings(readSettingsFromUI());
+                });
+            });
+        }
+
+        // Nmap Top Ports selector syncs with Nmap Arguments field
+        const topPortsSelect = document.getElementById('settingNmapTopPorts');
+        if (topPortsSelect) {
+            topPortsSelect.addEventListener('change', () => {
+                const argsInput = document.getElementById('settingNmapArgs');
+                const ports = topPortsSelect.value;
+                argsInput.value = argsInput.value.replace(/--top-ports\s+\d+/, '--top-ports ' + ports);
+                saveSettings();
+            });
+        }
+
+        // Settings reset button
+        const btnReset = document.getElementById('btnResetSettings');
+        if (btnReset) {
+            btnReset.addEventListener('click', () => {
+                applySettingsToUI(SETTINGS_DEFAULTS);
+                saveSettings();
+                showToast('Settings restored to defaults', 'info');
+            });
+        }
     }
 
     // ── Scan Control ────────────────────────────────────────────────────────
@@ -188,11 +469,21 @@
 
         clearResults();
         setScanningState(true);
+
+        // Stop live update during scan
+        stopLiveUpdate();
+        document.getElementById('settingLiveUpdate').checked = false;
+        state.liveUpdate = false;
+        setLiveUpdateEnabled(false);
+
         state.scanId = subnet;
 
+        const s = getSettings();
         state.socket.emit('start_scan', {
             subnet: subnet,
             scan_id: subnet,
+            ping_timeout: s.pingTimeout,
+            threads: s.threads,
         });
     }
 
@@ -200,28 +491,37 @@
         if (state.scanId) {
             state.socket.emit('stop_scan', { scan_id: state.scanId });
         }
+        // Also stop any batch scan in progress
+        state.socket.emit('stop_batch_scan');
+        state.fullScanPending = false;
         setScanningState(false);
+
+        // Reset Full Scan button
+        const btnFull = dom.btnFullScanMain();
+        btnFull.innerHTML = '<i class="fas fa-crosshairs mr-2"></i>Full Scan';
+        btnFull.disabled = false;
     }
 
     function setScanningState(scanning) {
         state.scanning = scanning;
         const btnScan = dom.btnScan();
         const btnStop = dom.btnStop();
+        const btnFull = dom.btnFullScanMain();
 
         if (scanning) {
-            btnScan.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Scanning...';
+            btnScan.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Sweeping...';
             btnScan.classList.add('scanning');
             btnScan.disabled = true;
+            btnFull.disabled = true;
             btnStop.classList.remove('d-none');
             dom.subnetInput().disabled = true;
-            dom.presetSelect().disabled = true;
         } else {
-            btnScan.innerHTML = '<i class="fas fa-play mr-2"></i>Start Scan';
+            btnScan.innerHTML = '<i class="fas fa-bolt mr-2"></i>Quick Sweep';
             btnScan.classList.remove('scanning');
             btnScan.disabled = false;
+            btnFull.disabled = false;
             btnStop.classList.add('d-none');
             dom.subnetInput().disabled = false;
-            dom.presetSelect().disabled = false;
         }
     }
 
@@ -231,10 +531,17 @@
             <div class="empty-state" id="emptyState">
                 <div class="empty-icon"><i class="fas fa-satellite-dish"></i></div>
                 <h4>Ready to Scan</h4>
-                <p>Enter a subnet in CIDR notation and hit <strong>Start Scan</strong> to discover hosts on your network.</p>
+                <p>Enter a subnet in CIDR notation and hit <strong>Quick Sweep</strong> to discover hosts on your network.</p>
             </div>`;
         dom.resultsTableBody().innerHTML = '';
         updateStats(0, 0, 0, 0);
+        setStatus('Idle', 'idle');
+        dom.progressFill().style.width = '0%';
+
+        // Reset Full Scan button
+        const btnFull = dom.btnFullScanMain();
+        btnFull.innerHTML = '<i class="fas fa-crosshairs mr-2"></i>Full Scan';
+        btnFull.disabled = false;
 
         if (state.dataTable) {
             try { state.dataTable.destroy(); } catch (e) { /* ignore */ }
@@ -256,17 +563,46 @@
         // Update list
         addOrUpdateTableRow(data);
 
+        // Auto-scroll to latest result
+        if (document.getElementById('settingAutoScroll').checked && data.alive) {
+            const block = document.getElementById('block-' + data.ip.replace(/\./g, '-'));
+            if (block) block.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
         // Update stats
         const all = Object.values(state.results);
         const online = all.filter(r => r.alive).length;
         const offline = all.filter(r => !r.alive).length;
         updateStats(data.total || all.length, online, offline, data.progress || 0);
+
+        // Update status text & progress bar
+        const pct = Math.round(data.progress || 0);
+        setStatus('Sweep ' + pct + '%', 'scanning');
+        dom.progressFill().style.width = pct + '%';
     }
 
     function handleScanComplete(data) {
-        setScanningState(false);
+        state.scanCompleted = true;
         updateStats(data.total, data.alive, data.dead, 100);
+
+        if (state.fullScanPending) {
+            // Full Scan was clicked — auto-start deep scan phase
+            state.fullScanPending = false;
+            setStatus('Starting deep scan...', 'scanning');
+            showToast(`Ping complete — ${data.alive} online. Starting deep scan...`, 'info');
+            startBatchFullScan();
+            return;
+        }
+
+        setScanningState(false);
+        setStatus('Done ✔', 'done');
+        dom.progressFill().style.width = '100%';
+        setTimeout(() => { dom.progressFill().style.width = '0%'; }, 1500);
         showToast(`Scan complete — ${data.alive} hosts online, ${data.dead} offline`, 'success');
+        playScanCompleteSound();
+
+        // Enable live update toggle now that a scan has completed
+        setLiveUpdateEnabled(true);
 
         // Initialize or refresh DataTable
         initDataTable();
@@ -274,6 +610,8 @@
 
     function handleScanError(data) {
         setScanningState(false);
+        setStatus('Error', 'error');
+        dom.progressFill().style.width = '0%';
         showToast('Error: ' + data.error, 'error');
     }
 
@@ -305,14 +643,9 @@
         block.dataset.alive = data.alive ? 'true' : 'false';
         block.className = `ip-block ${data.alive ? 'online' : 'offline'}`;
 
-        const hostname = data.hostname ? truncate(data.hostname, 16) : '';
-        const timeStr = data.response_time !== null ? data.response_time + ' ms' : '';
-
         block.innerHTML = `
             <span class="ip-status-dot"></span>
             <div class="ip-addr">${formatIP(data.ip)}</div>
-            <div class="ip-hostname" title="${data.hostname || ''}">${hostname}</div>
-            <div class="ip-time">${timeStr}</div>
         `;
 
         block.onclick = () => openHostDetail(data.ip);
@@ -358,13 +691,18 @@
             ? `<span class="text-cyan font-weight-bold">${data.response_time} ms</span>`
             : '<span class="text-muted">—</span>';
 
+        // TTL-based OS guess shown immediately during ping sweep
+        const osGuess = data.ttl_os_guess
+            ? `<span class="text-muted" title="Guessed from TTL=${data.ttl}">${data.ttl_os_guess} <i class="fas fa-question-circle" style="font-size:0.65rem;opacity:0.5"></i></span>`
+            : '<span class="text-muted">—</span>';
+
         row.innerHTML = `
             <td>${statusBadge}</td>
             <td><strong>${data.ip}</strong></td>
             <td>${data.hostname || '<span class="text-muted">—</span>'}</td>
             <td>${responseTime}</td>
             <td><span class="text-muted" id="ports-${data.ip.replace(/\./g, '-')}">—</span></td>
-            <td><span class="text-muted" id="os-${data.ip.replace(/\./g, '-')}">—</span></td>
+            <td id="os-${data.ip.replace(/\./g, '-')}">${osGuess}</td>
             <td><span class="text-muted" id="mac-${data.ip.replace(/\./g, '-')}">—</span></td>
             <td>
                 <button class="btn btn-detail" onclick="SubnetScanner.openHostDetail('${data.ip}')">
@@ -387,17 +725,14 @@
         const rowCount = document.querySelectorAll('#resultsTable tbody tr').length;
         if (rowCount > 0) {
             state.dataTable = $('#resultsTable').DataTable({
-                paging: true,
-                pageLength: 50,
+                paging: false,
                 ordering: true,
                 searching: true,
                 responsive: true,
                 order: [[1, 'asc']],
-                dom: '<"row"<"col-sm-6"l><"col-sm-6"f>>rtip',
+                dom: '<"row"<"col-sm-12"f>>rt',
                 language: {
                     search: '<i class="fas fa-search mr-1"></i>',
-                    lengthMenu: 'Show _MENU_ hosts',
-                    info: 'Showing _START_ to _END_ of _TOTAL_ hosts',
                     emptyTable: 'No results yet — start a scan',
                 },
             });
@@ -414,12 +749,20 @@
 
     function applyFilterToBlock(block) {
         const filter = state.currentFilter;
+        const showOffline = document.getElementById('settingShowOffline').checked;
+        const isAlive = block.dataset.alive === 'true';
+
+        if (!isAlive && !showOffline && filter !== 'offline') {
+            block.style.display = 'none';
+            return;
+        }
+
         if (filter === 'all') {
             block.style.display = '';
         } else if (filter === 'online') {
-            block.style.display = block.dataset.alive === 'true' ? '' : 'none';
+            block.style.display = isAlive ? '' : 'none';
         } else if (filter === 'offline') {
-            block.style.display = block.dataset.alive === 'false' ? '' : 'none';
+            block.style.display = !isAlive ? '' : 'none';
         }
     }
 
@@ -437,6 +780,8 @@
     // ── View Switching ──────────────────────────────────────────────────────
     function switchView(view) {
         state.currentView = view;
+        dom.btnGridView().classList.toggle('active', view === 'grid');
+        dom.btnListView().classList.toggle('active', view === 'list');
         if (view === 'grid') {
             dom.gridViewCard().classList.remove('d-none');
             dom.listViewCard().classList.add('d-none');
@@ -452,8 +797,18 @@
         animateNumber(dom.statTotal(), total);
         animateNumber(dom.statOnline(), online);
         animateNumber(dom.statOffline(), offline);
-        dom.statProgress().innerHTML = Math.round(progress) + '<sup style="font-size:20px">%</sup>';
-        dom.progressFill().style.width = progress + '%';
+        if (progress !== undefined && progress !== null) {
+            dom.progressFill().style.width = progress + '%';
+        }
+    }
+
+    function setStatus(text, type) {
+        // type: 'idle' | 'scanning' | 'live' | 'done' | 'error'
+        const el = dom.statusText();
+        const card = dom.statusCard();
+        el.textContent = text;
+        card.className = 'stat-card stat-status';
+        if (type) card.classList.add('stat-status-' + type);
     }
 
     function animateNumber(el, target) {
@@ -489,8 +844,8 @@
 
         $('#hostDetailModal').modal('show');
 
-        // Request detailed scan
-        requestHostDetail(ip, 'quick');
+        // Always request a full nmap scan for detail modal
+        requestHostDetail(ip, 'full');
     }
 
     function requestHostDetail(ip, scanType) {
@@ -551,7 +906,97 @@
             </div>`;
     }
 
+    function formatUptime(seconds) {
+        if (!seconds) return null;
+        const s = parseInt(seconds, 10);
+        if (isNaN(s)) return null;
+        const d = Math.floor(s / 86400);
+        const h = Math.floor((s % 86400) / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const parts = [];
+        if (d > 0) parts.push(d + 'd');
+        if (h > 0) parts.push(h + 'h');
+        if (m > 0) parts.push(m + 'm');
+        return parts.length ? parts.join(' ') : '< 1m';
+    }
+
+    function renderHttpSection(info, label, icon) {
+        if (!info || !info.status_code) return '';
+        const portNote = info.port ? ` <span class="text-muted">(port ${info.port})</span>` : '';
+        let h = `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-${icon}"></i> ${label}${portNote}</div>
+                <div class="detail-grid">
+                    <div class="detail-item">
+                        <div class="label">Status Code</div>
+                        <div class="value">${info.status_code}</div>
+                    </div>`;
+        if (info.server) {
+            h += `
+                    <div class="detail-item">
+                        <div class="label">Server</div>
+                        <div class="value">${escapeHtml(info.server)}</div>
+                    </div>`;
+        }
+        if (info.powered_by) {
+            h += `
+                    <div class="detail-item">
+                        <div class="label">Powered By</div>
+                        <div class="value">${escapeHtml(info.powered_by)}</div>
+                    </div>`;
+        }
+        if (info.title) {
+            h += `
+                    <div class="detail-item">
+                        <div class="label">Page Title</div>
+                        <div class="value">${escapeHtml(info.title)}</div>
+                    </div>`;
+        }
+        if (info.content_type) {
+            h += `
+                    <div class="detail-item">
+                        <div class="label">Content-Type</div>
+                        <div class="value">${escapeHtml(info.content_type)}</div>
+                    </div>`;
+        }
+        if (info.redirect) {
+            h += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Redirect</div>
+                        <div class="value" style="word-break:break-all;">${escapeHtml(info.redirect)}</div>
+                    </div>`;
+        }
+        if (info.headers && Object.keys(info.headers).length > 0) {
+            h += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Response Headers</div>
+                        <pre style="color: var(--text-secondary); font-size: 0.75rem; white-space: pre-wrap; margin:0; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; margin-top: 4px;">`;
+            for (const [hdr, val] of Object.entries(info.headers)) {
+                h += `${escapeHtml(hdr)}: ${escapeHtml(val)}\n`;
+            }
+            h += `</pre></div>`;
+        }
+        h += `</div></div>`;
+        return h;
+    }
+
     function renderHostDetail(data) {
+        // Merge any cached deep scan data for this host
+        const cached = state.results[data.ip];
+        if (cached && cached.deep) {
+            if (!data.http_info && cached.deep.http_info) data.http_info = cached.deep.http_info;
+            if (!data.https_info && cached.deep.https_info) data.https_info = cached.deep.https_info;
+            if (!data.ssl_info && cached.deep.ssl_info) data.ssl_info = cached.deep.ssl_info;
+            if (!data.banners && cached.deep.banners) data.banners = cached.deep.banners;
+            if (!data.mac_from_arp && cached.deep.mac_from_arp) data.mac_from_arp = cached.deep.mac_from_arp;
+            if (!data.mac_vendor && cached.deep.mac_vendor) data.mac_vendor = cached.deep.mac_vendor;
+            if (!data.ssdp_info && cached.deep.ssdp_info) data.ssdp_info = cached.deep.ssdp_info;
+        }
+        // Merge response_time from cached ping data
+        if (cached && cached.response_time !== undefined && data.response_time === undefined) {
+            data.response_time = cached.response_time;
+        }
+
         let html = '';
 
         // ── Basic Information
@@ -574,6 +1019,10 @@
                     <div class="value">${data.hostname || data.reverse_dns || '<span class="text-muted">Unknown</span>'}</div>
                 </div>
                 <div class="detail-item">
+                    <div class="label">Response Time</div>
+                    <div class="value">${data.response_time != null ? '<span class="text-cyan">' + data.response_time + ' ms</span>' : '<span class="text-muted">—</span>'}</div>
+                </div>
+                <div class="detail-item">
                     <div class="label">Reverse DNS</div>
                     <div class="value">${data.reverse_dns || '<span class="text-muted">—</span>'}</div>
                 </div>`;
@@ -582,18 +1031,19 @@
             html += `
                 <div class="detail-item">
                     <div class="label">MAC Address</div>
-                    <div class="value">${data.mac_address || data.mac_from_arp || '—'}</div>
+                    <div class="value"><code style="color:var(--text);background:rgba(0,0,0,0.3);padding:2px 6px;border-radius:4px;">${data.mac_address || data.mac_from_arp || '—'}</code></div>
                 </div>`;
             // Update list view MAC
             const macEl = document.getElementById('mac-' + data.ip.replace(/\./g, '-'));
             if (macEl) macEl.textContent = data.mac_address || data.mac_from_arp || '—';
         }
 
-        if (data.vendor) {
+        const vendorName = data.mac_vendor || data.vendor;
+        if (vendorName) {
             html += `
                 <div class="detail-item">
-                    <div class="label">Vendor</div>
-                    <div class="value">${data.vendor}</div>
+                    <div class="label">Vendor (OUI)</div>
+                    <div class="value">${escapeHtml(vendorName)}</div>
                 </div>`;
         }
 
@@ -601,7 +1051,7 @@
             html += `
                 <div class="detail-item">
                     <div class="label">NetBIOS Name</div>
-                    <div class="value">${data.netbios_name}</div>
+                    <div class="value">${escapeHtml(data.netbios_name)}</div>
                 </div>`;
         }
 
@@ -609,14 +1059,66 @@
             html += `
                 <div class="detail-item">
                     <div class="label">Workgroup</div>
-                    <div class="value">${data.workgroup}</div>
+                    <div class="value">${escapeHtml(data.workgroup)}</div>
                 </div>`;
         }
 
         html += `</div></div>`;
 
+        // ── All Hostnames (nmap)
+        if (data.hostnames && data.hostnames.length > 0) {
+            const hasNames = data.hostnames.some(h => h.name);
+            if (hasNames) {
+                html += `
+                <div class="detail-section">
+                    <div class="detail-section-title"><i class="fas fa-tags"></i> Hostnames</div>
+                    <div class="detail-grid">`;
+                data.hostnames.forEach(h => {
+                    if (h.name) {
+                        html += `
+                        <div class="detail-item">
+                            <div class="label">${escapeHtml(h.type || 'hostname')}</div>
+                            <div class="value">${escapeHtml(h.name)}</div>
+                        </div>`;
+                    }
+                });
+                html += `</div></div>`;
+            }
+        }
+
+        // ── SSDP / UPnP Discovery
+        if (data.ssdp_info) {
+            const ssdp = data.ssdp_info;
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-broadcast-tower"></i> UPnP / SSDP</div>
+                <div class="detail-grid">`;
+            if (ssdp.server) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Server</div>
+                        <div class="value">${escapeHtml(ssdp.server)}</div>
+                    </div>`;
+            }
+            if (ssdp.location) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Location</div>
+                        <div class="value" style="word-break:break-all;">${escapeHtml(ssdp.location)}</div>
+                    </div>`;
+            }
+            if (ssdp.services && ssdp.services.length > 0) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Services (${ssdp.services.length})</div>
+                        <div class="value" style="font-size:0.78rem;">${ssdp.services.map(s => escapeHtml(s)).join('<br>')}</div>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        }
+
         // ── DNS Records
-        if (data.dns_names && data.dns_names.length > 0 || data.ptr_records && data.ptr_records.length > 0) {
+        if ((data.dns_names && data.dns_names.length > 0) || (data.ptr_records && data.ptr_records.length > 0)) {
             html += `
             <div class="detail-section">
                 <div class="detail-section-title"><i class="fas fa-globe"></i> DNS Information</div>
@@ -625,38 +1127,60 @@
                 html += `
                     <div class="detail-item">
                         <div class="label">DNS Names</div>
-                        <div class="value">${data.dns_names.join('<br>')}</div>
+                        <div class="value">${data.dns_names.map(n => escapeHtml(n)).join('<br>')}</div>
                     </div>`;
             }
             if (data.ptr_records && data.ptr_records.length) {
                 html += `
                     <div class="detail-item">
                         <div class="label">PTR Records</div>
-                        <div class="value">${data.ptr_records.join('<br>')}</div>
+                        <div class="value">${data.ptr_records.map(p => escapeHtml(p)).join('<br>')}</div>
                     </div>`;
             }
             html += `</div></div>`;
         }
 
-        // ── OS Detection
+        // ── OS Detection (with OS classes)
         if (data.os_matches && data.os_matches.length > 0) {
             html += `
             <div class="detail-section">
                 <div class="detail-section-title"><i class="fas fa-desktop"></i> OS Detection</div>
                 <div class="detail-grid">`;
-            data.os_matches.slice(0, 3).forEach(os => {
+            data.os_matches.slice(0, 5).forEach(os => {
                 html += `
-                    <div class="detail-item">
+                    <div class="detail-item" style="grid-column: 1/-1;">
                         <div class="label">OS Match (${os.accuracy}% accuracy)</div>
-                        <div class="value">${os.name}</div>
-                    </div>`;
+                        <div class="value">${escapeHtml(os.name)}</div>`;
+                // Show OS classes
+                if (os.os_classes && os.os_classes.length > 0) {
+                    html += `<div style="margin-top:6px;">`;
+                    os.os_classes.forEach(cls => {
+                        const parts = [];
+                        if (cls.type) parts.push(`<span class="text-muted">Type:</span> ${escapeHtml(cls.type)}`);
+                        if (cls.vendor) parts.push(`<span class="text-muted">Vendor:</span> ${escapeHtml(cls.vendor)}`);
+                        if (cls.osfamily) parts.push(`<span class="text-muted">Family:</span> ${escapeHtml(cls.osfamily)}`);
+                        if (cls.osgen) parts.push(`<span class="text-muted">Gen:</span> ${escapeHtml(cls.osgen)}`);
+                        if (cls.accuracy) parts.push(`<span class="text-muted">Acc:</span> ${cls.accuracy}%`);
+                        if (parts.length) {
+                            html += `<div style="font-size:0.78rem; color: var(--text-secondary); padding: 2px 0;">${parts.join(' &nbsp;·&nbsp; ')}</div>`;
+                        }
+                        // CPE inside OS class
+                        if (cls.cpe && cls.cpe.length > 0) {
+                            cls.cpe.forEach(c => {
+                                html += `<div style="font-size:0.72rem; color: var(--text-dim); padding-left: 8px;"><i class="fas fa-tag mr-1"></i>${escapeHtml(c)}</div>`;
+                            });
+                        }
+                    });
+                    html += `</div>`;
+                }
+                html += `</div>`;
             });
             html += `</div></div>`;
 
             // Update list view OS
             const osEl = document.getElementById('os-' + data.ip.replace(/\./g, '-'));
             if (osEl && data.os_matches.length > 0) {
-                osEl.innerHTML = `<span title="${data.os_matches[0].name}">${truncate(data.os_matches[0].name, 25)}</span>`;
+                osEl.innerHTML = `<span title="${escapeHtml(data.os_matches[0].name)}">${truncate(data.os_matches[0].name, 25)}</span>`;
             }
         }
 
@@ -665,23 +1189,22 @@
             // Update list view ports
             const portsEl = document.getElementById('ports-' + data.ip.replace(/\./g, '-'));
             if (portsEl) {
-                portsEl.innerHTML = data.open_ports.slice(0, 5).map(p =>
-                    `<span class="port-tag">${p}</span>`
-                ).join(' ') + (data.open_ports.length > 5 ? ` <span class="text-muted">+${data.open_ports.length - 5}</span>` : '');
+                portsEl.className = '';
+                portsEl.innerHTML = renderPortTags(data.open_ports);
             }
         }
 
-        // ── Services / Port Table
+        // ── Services / Port Table (with CPE + per-port scripts)
         if (data.services && data.services.length > 0) {
             html += `
             <div class="detail-section">
                 <div class="detail-section-title"><i class="fas fa-plug"></i> Ports & Services (${data.services.length})</div>
-                <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
                     <table class="port-table">
                         <thead>
                             <tr>
                                 <th>Port</th>
-                                <th>Protocol</th>
+                                <th>Proto</th>
                                 <th>State</th>
                                 <th>Service</th>
                                 <th>Product</th>
@@ -695,52 +1218,207 @@
                 const stateClass = svc.state === 'open' ? 'port-state-open'
                     : svc.state === 'closed' ? 'port-state-closed'
                     : 'port-state-filtered';
+                const knownProto = WELL_KNOWN_PORTS[svc.port];
+                const svcDisplay = knownProto || svc.service || '—';
 
                 html += `
                             <tr>
-                                <td><strong>${svc.port}</strong></td>
+                                <td>${formatPortTag(svc.port)}</td>
                                 <td>${svc.protocol}</td>
                                 <td><span class="${stateClass}">${svc.state}</span></td>
-                                <td>${svc.service}</td>
-                                <td>${svc.product || '—'}</td>
-                                <td>${svc.version || '—'}</td>
-                                <td>${svc.extrainfo || '—'}</td>
+                                <td>${escapeHtml(svcDisplay)}</td>
+                                <td>${svc.product ? escapeHtml(svc.product) : '—'}</td>
+                                <td>${svc.version ? escapeHtml(svc.version) : '—'}</td>
+                                <td>${svc.extrainfo ? escapeHtml(svc.extrainfo) : '—'}</td>
                             </tr>`;
+
+                // CPE row
+                if (svc.cpe) {
+                    const cpeList = Array.isArray(svc.cpe) ? svc.cpe : [svc.cpe];
+                    const filtered = cpeList.filter(c => c);
+                    if (filtered.length > 0) {
+                        html += `
+                            <tr>
+                                <td colspan="7" style="padding: 2px 12px 6px; border-top: none;">
+                                    <span style="font-size:0.72rem; color: var(--text-dim);"><i class="fas fa-tag mr-1"></i>CPE: ${filtered.map(c => escapeHtml(c)).join(', ')}</span>
+                                </td>
+                            </tr>`;
+                    }
+                }
+
+                // Per-port NSE scripts
+                if (svc.scripts && Object.keys(svc.scripts).length > 0) {
+                    for (const [sid, sout] of Object.entries(svc.scripts)) {
+                        html += `
+                            <tr>
+                                <td colspan="7" style="padding: 4px 12px 8px; border-top: none;">
+                                    <div style="font-size:0.75rem;">
+                                        <span class="text-cyan"><i class="fas fa-scroll mr-1"></i>${escapeHtml(sid)}</span>
+                                        <pre style="color: var(--text-secondary); font-size: 0.73rem; white-space: pre-wrap; margin: 4px 0 0; background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px;">${escapeHtml(sout)}</pre>
+                                    </div>
+                                </td>
+                            </tr>`;
+                    }
+                }
             });
 
             html += `</tbody></table></div></div>`;
         }
 
-        // ── Host Scripts
+        // ── HTTP Information (with port number)
+        html += renderHttpSection(data.http_info, 'HTTP Information', 'globe');
+
+        // ── HTTPS Information (separate section)
+        html += renderHttpSection(data.https_info, 'HTTPS Information', 'lock');
+
+        // ── SSL / TLS Certificate (with port number)
+        if (data.ssl_info && (data.ssl_info.ssl_version || data.ssl_info.ssl_subject)) {
+            const sslPort = data.ssl_info.port ? ` <span class="text-muted">(port ${data.ssl_info.port})</span>` : '';
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-shield-alt"></i> SSL/TLS Certificate${sslPort}</div>
+                <div class="detail-grid">`;
+            if (data.ssl_info.ssl_version) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Protocol</div>
+                        <div class="value">${escapeHtml(data.ssl_info.ssl_version)}</div>
+                    </div>`;
+            }
+            if (data.ssl_info.ssl_cipher) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Cipher</div>
+                        <div class="value">${escapeHtml(data.ssl_info.ssl_cipher)}</div>
+                    </div>`;
+            }
+            if (data.ssl_info.ssl_subject) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Subject (CN)</div>
+                        <div class="value">${escapeHtml(String(data.ssl_info.ssl_subject))}</div>
+                    </div>`;
+            }
+            if (data.ssl_info.ssl_issuer) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Issuer</div>
+                        <div class="value">${escapeHtml(String(data.ssl_info.ssl_issuer))}</div>
+                    </div>`;
+            }
+            if (data.ssl_info.ssl_not_before) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Valid From</div>
+                        <div class="value">${data.ssl_info.ssl_not_before}</div>
+                    </div>`;
+            }
+            if (data.ssl_info.ssl_not_after) {
+                html += `
+                    <div class="detail-item">
+                        <div class="label">Valid Until</div>
+                        <div class="value">${data.ssl_info.ssl_not_after}</div>
+                    </div>`;
+            }
+            if (data.ssl_info.ssl_san && data.ssl_info.ssl_san.length > 0) {
+                html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">Subject Alt Names</div>
+                        <div class="value">${data.ssl_info.ssl_san.map(s => escapeHtml(s)).join(', ')}</div>
+                    </div>`;
+            }
+            html += `</div></div>`;
+        }
+
+        // ── TCP Banners
+        if (data.banners && Object.keys(data.banners).length > 0) {
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-satellite-dish"></i> Service Banners</div>`;
+            for (const [port, banner] of Object.entries(data.banners)) {
+                const knownName = WELL_KNOWN_PORTS[parseInt(port, 10)];
+                const portLabel = knownName ? `Port ${port} (${knownName})` : `Port ${port}`;
+                html += `
+                <div class="detail-item mb-2" style="grid-column: 1/-1;">
+                    <div class="label">${portLabel}</div>
+                    <pre style="color: var(--text-secondary); font-size: 0.78rem; white-space: pre-wrap; margin:0; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; margin-top: 4px;">${escapeHtml(banner)}</pre>
+                </div>`;
+            }
+            html += `</div>`;
+        }
+
+        // ── Host Scripts (NSE)
         if (data.scripts && Object.keys(data.scripts).length > 0) {
             html += `
             <div class="detail-section">
-                <div class="detail-section-title"><i class="fas fa-terminal"></i> NSE Scripts</div>`;
+                <div class="detail-section-title"><i class="fas fa-terminal"></i> NSE Host Scripts</div>`;
             for (const [scriptId, output] of Object.entries(data.scripts)) {
                 html += `
                 <div class="detail-item mb-2" style="grid-column: 1/-1;">
-                    <div class="label">${scriptId}</div>
+                    <div class="label">${escapeHtml(scriptId)}</div>
                     <pre style="color: var(--text-secondary); font-size: 0.78rem; white-space: pre-wrap; margin:0; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 6px; margin-top: 4px;">${escapeHtml(output)}</pre>
                 </div>`;
             }
             html += `</div>`;
         }
 
-        // ── Uptime
-        if (data.uptime) {
+        // ── Uptime & TCP Sequence
+        if (data.uptime || data.tcp_sequence) {
             html += `
             <div class="detail-section">
-                <div class="detail-section-title"><i class="fas fa-clock"></i> Uptime</div>
-                <div class="detail-grid">
+                <div class="detail-section-title"><i class="fas fa-clock"></i> System Information</div>
+                <div class="detail-grid">`;
+            if (data.uptime) {
+                const friendly = formatUptime(data.uptime.seconds);
+                html += `
                     <div class="detail-item">
-                        <div class="label">Seconds</div>
-                        <div class="value">${data.uptime.seconds || '—'}</div>
+                        <div class="label">Uptime</div>
+                        <div class="value">${friendly ? friendly + ' <span class="text-muted">(' + data.uptime.seconds + 's)</span>' : (data.uptime.seconds || '—')}</div>
                     </div>
                     <div class="detail-item">
                         <div class="label">Last Boot</div>
                         <div class="value">${data.uptime.lastboot || '—'}</div>
-                    </div>
-                </div>
+                    </div>`;
+            }
+            if (data.tcp_sequence) {
+                if (data.tcp_sequence.class) {
+                    html += `
+                    <div class="detail-item">
+                        <div class="label">TCP Seq. Class</div>
+                        <div class="value">${escapeHtml(data.tcp_sequence.class)}</div>
+                    </div>`;
+                }
+                if (data.tcp_sequence.difficulty) {
+                    html += `
+                    <div class="detail-item">
+                        <div class="label">TCP Seq. Difficulty</div>
+                        <div class="value">${escapeHtml(data.tcp_sequence.difficulty)}</div>
+                    </div>`;
+                }
+                if (data.tcp_sequence.index) {
+                    html += `
+                    <div class="detail-item">
+                        <div class="label">TCP Seq. Index</div>
+                        <div class="value">${escapeHtml(String(data.tcp_sequence.index))}</div>
+                    </div>`;
+                }
+                if (data.tcp_sequence.values) {
+                    html += `
+                    <div class="detail-item" style="grid-column: 1/-1;">
+                        <div class="label">TCP Seq. Values</div>
+                        <div class="value" style="font-size:0.75rem; word-break:break-all;">${escapeHtml(data.tcp_sequence.values)}</div>
+                    </div>`;
+                }
+            }
+            html += `</div></div>`;
+        }
+
+        // ── WHOIS Information
+        if (data.whois) {
+            html += `
+            <div class="detail-section">
+                <div class="detail-section-title"><i class="fas fa-address-card"></i> WHOIS Information</div>
+                <pre style="color: var(--text-secondary); font-size: 0.73rem; white-space: pre-wrap; margin:0; background: rgba(0,0,0,0.3); padding: 12px; border-radius: 6px; max-height: 300px; overflow-y: auto;">${escapeHtml(data.whois)}</pre>
             </div>`;
         }
 
@@ -749,7 +1427,7 @@
             html += `
             <div class="detail-section">
                 <div class="alert" style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:8px; color: var(--accent-red); padding: 12px 16px;">
-                    <i class="fas fa-exclamation-triangle mr-2"></i>${data.error}
+                    <i class="fas fa-exclamation-triangle mr-2"></i>${escapeHtml(data.error)}
                 </div>
             </div>`;
         }
@@ -779,6 +1457,11 @@
     }
 
     function showToast(message, type) {
+        // Respect toast setting (always show errors)
+        if (type !== 'error') {
+            try { if (!document.getElementById('settingToasts').checked) return; } catch (e) { /* ok */ }
+        }
+
         let container = document.querySelector('.toast-container');
         if (!container) {
             container = document.createElement('div');
@@ -806,10 +1489,252 @@
         }, 4000);
     }
 
+    /** Play a short notification beep when scan completes (if enabled). */
+    function playScanCompleteSound() {
+        try {
+            if (!document.getElementById('settingSounds').checked) return;
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = 880;
+            gain.gain.value = 0.15;
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+            osc.stop(ctx.currentTime + 0.3);
+        } catch (e) { /* AudioContext not available */ }
+    }
+
     // ── Public API (for onclick handlers in HTML) ───────────────────────────
     window.SubnetScanner = {
         openHostDetail: openHostDetail,
     };
+
+    // ── Batch Nmap Scan ───────────────────────────────────────────────────────
+    function startBatchNmapScan() {
+        const onlineIps = Object.values(state.results)
+            .filter(r => r.alive)
+            .map(r => r.ip);
+
+        if (onlineIps.length === 0) {
+            showToast('No online hosts to scan', 'warning');
+            return;
+        }
+
+        // Stop live update
+        stopLiveUpdate();
+        document.getElementById('settingLiveUpdate').checked = false;
+        state.liveUpdate = false;
+        setLiveUpdateEnabled(false);
+        state.scanning = true;
+
+        const btn = dom.btnFullScanMain();
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> Scanning...';
+        btn.disabled = true;
+
+        showToast('Starting Nmap scan on ' + onlineIps.length + ' hosts...', 'info');
+        setStatus('Nmap 0/' + onlineIps.length, 'scanning');
+
+        state.socket.emit('batch_nmap_scan', { ips: onlineIps });
+    }
+
+    function handleBatchNmapResult(data) {
+        if (!data || !data.ip) return;
+
+        // Update list view columns
+        const ipKey = data.ip.replace(/\./g, '-');
+
+        // Open ports
+        if (data.open_ports && data.open_ports.length > 0) {
+            const portsEl = document.getElementById('ports-' + ipKey);
+            if (portsEl) {
+                portsEl.className = '';
+                portsEl.innerHTML = renderPortTags(data.open_ports);
+            }
+        }
+
+        // OS
+        if (data.os_matches && data.os_matches.length > 0) {
+            const osEl = document.getElementById('os-' + ipKey);
+            if (osEl) {
+                osEl.innerHTML = `<span title="${data.os_matches[0].name}">${truncate(data.os_matches[0].name, 25)}</span>`;
+            }
+        }
+
+        // MAC
+        if (data.mac_address) {
+            const macEl = document.getElementById('mac-' + ipKey);
+            if (macEl) macEl.textContent = data.mac_address;
+        }
+    }
+
+    // ── Full Scan (ping → nmap + deep probes) ─────────────────────────────────
+    function startFullScan() {
+        // If a sweep was already done for the SAME subnet, skip the sweep
+        // and go straight to deep scan
+        const currentSubnet = dom.subnetInput().value.trim();
+        const hasResults = Object.keys(state.results).length > 0;
+        if (hasResults && state.scanCompleted && state.scanId === currentSubnet) {
+            startBatchFullScan();
+            return;
+        }
+        // Different subnet or no prior sweep — run ping sweep first
+        state.fullScanPending = true;
+        startScan();
+    }
+
+    function startBatchFullScan() {
+        const onlineIps = Object.values(state.results)
+            .filter(r => r.alive)
+            .map(r => r.ip);
+
+        if (onlineIps.length === 0) {
+            setScanningState(false);
+            setStatus('Done — no hosts online', 'done');
+            showToast('No online hosts to deep scan', 'warning');
+            return;
+        }
+
+        // Keep buttons disabled, update Full Scan button text
+        const btnFull = dom.btnFullScanMain();
+        btnFull.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Deep Scan...';
+        btnFull.disabled = true;
+        dom.btnScan().disabled = true;
+        dom.btnStop().classList.remove('d-none');
+        dom.subnetInput().disabled = true;
+        state.scanning = true;
+
+        // Stop live update
+        stopLiveUpdate();
+        document.getElementById('settingLiveUpdate').checked = false;
+        state.liveUpdate = false;
+        setLiveUpdateEnabled(false);
+
+        setStatus('Deep Scan 0/' + onlineIps.length, 'scanning');
+
+        const s = getSettings();
+        state.socket.emit('batch_full_scan', {
+            ips: onlineIps,
+            nmap_args:      s.nmapArgs,
+            deep_timeout:   s.deepTimeout,
+            ssdp_timeout:   s.ssdpTimeout,
+            deep_http:      s.deepHttp,
+            deep_ssl:       s.deepSsl,
+            deep_banners:   s.deepBanners,
+            deep_ssdp:      s.deepSsdp,
+            deep_mac_vendor: s.deepMacVendor,
+        });
+    }
+
+    function handleBatchFullScanResult(data) {
+        if (!data || !data.ip) return;
+
+        const ipKey = data.ip.replace(/\./g, '-');
+
+        // Store deep scan data in state
+        if (state.results[data.ip]) {
+            state.results[data.ip].deep = data;
+            if (data.open_ports) state.results[data.ip].open_ports = data.open_ports;
+        }
+
+        // Open Ports
+        if (data.open_ports && data.open_ports.length > 0) {
+            const portsEl = document.getElementById('ports-' + ipKey);
+            if (portsEl) {
+                portsEl.className = '';
+                portsEl.innerHTML = renderPortTags(data.open_ports);
+            }
+        } else {
+            // No open ports found — show that explicitly
+            const portsEl = document.getElementById('ports-' + ipKey);
+            if (portsEl) {
+                portsEl.className = 'text-muted';
+                portsEl.textContent = 'none';
+            }
+        }
+
+        // OS — prefer nmap, fallback to TTL guess
+        const osEl = document.getElementById('os-' + ipKey);
+        if (osEl) {
+            if (data.os_matches && data.os_matches.length > 0) {
+                osEl.innerHTML = `<span title="${data.os_matches[0].name}">${truncate(data.os_matches[0].name, 25)}</span>`;
+            } else if (state.results[data.ip] && state.results[data.ip].ttl_os_guess) {
+                osEl.innerHTML = `<span class="text-muted" title="Guessed from TTL">${state.results[data.ip].ttl_os_guess} <i class="fas fa-question-circle" style="font-size:0.65rem;opacity:0.5"></i></span>`;
+            }
+        }
+
+        // MAC + Vendor
+        const macEl = document.getElementById('mac-' + ipKey);
+        if (macEl) {
+            const mac = data.mac_address || data.mac_from_arp;
+            if (mac) {
+                let macHtml = mac;
+                const vendor = data.mac_vendor || data.vendor;
+                if (vendor) {
+                    macHtml += `<br><small class="text-muted">${truncate(vendor, 30)}</small>`;
+                }
+                macEl.innerHTML = macHtml;
+            }
+        }
+    }
+
+    // ── Live Update ─────────────────────────────────────────────────────────
+    function setLiveUpdateEnabled(enabled) {
+        const toggle = document.getElementById('settingLiveUpdate');
+        const label = document.getElementById('liveUpdateToggle');
+        toggle.disabled = !enabled;
+        if (label) label.classList.toggle('disabled', !enabled);
+    }
+
+    function startLiveUpdate() {
+        stopLiveUpdate();
+        if (Object.keys(state.results).length === 0) return;
+        setStatus('Live • Starting...', 'live');
+        runLiveUpdate();
+    }
+
+    function stopLiveUpdate() {
+        if (state.liveTimeout) {
+            clearTimeout(state.liveTimeout);
+            state.liveTimeout = null;
+        }
+        if (!state.scanning) {
+            setStatus('Idle', 'idle');
+            dom.progressFill().style.width = '0%';
+        }
+    }
+
+    function runLiveUpdate() {
+        const ips = Object.keys(state.results);
+        if (ips.length === 0 || state.scanning) return;
+        const pingCount = parseInt(document.getElementById('settingLivePingCount').value, 10) || 2;
+        state.socket.emit('live_update', { ips: ips, ping_count: pingCount });
+    }
+
+    function handleLiveUpdateResult(data) {
+        const prev = state.results[data.ip];
+        if (!prev) return;
+
+        const changed = prev.alive !== data.alive || prev.response_time !== data.response_time;
+        if (!changed) return;
+
+        // Update cached result
+        prev.alive = data.alive;
+        prev.response_time = data.response_time;
+        if (data.hostname) prev.hostname = data.hostname;
+
+        // Refresh UI for this host
+        addOrUpdateGridBlock(prev);
+        addOrUpdateTableRow(prev);
+
+        // Recount stats
+        const all = Object.values(state.results);
+        const online = all.filter(r => r.alive).length;
+        const offline = all.filter(r => !r.alive).length;
+        updateStats(all.length, online, offline, 100);
+    }
 
     // ── Start ───────────────────────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', init);

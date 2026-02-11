@@ -5,139 +5,227 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Subnet Scanner{% endblock %}</title>
 
-    <!-- Google Fonts -->
+    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
     <!-- Font Awesome 6 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
-    <!-- AdminLTE 3 -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/admin-lte@3.2/dist/css/adminlte.min.css">
+    <!-- Bootstrap 4 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
 
-    <!-- DataTables -->
+    <!-- DataTables Bootstrap 4 -->
     <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/dataTables.bootstrap4.min.css">
-    <link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.5.0/css/responsive.bootstrap4.min.css">
 
-    <!-- Animate.css -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
-
-    <!-- Custom Styles -->
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}">
+    <!-- Custom Theme -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}?v=8">
 
     {% block extra_css %}{% endblock %}
 </head>
-<body class="hold-transition sidebar-mini layout-fixed layout-navbar-fixed dark-mode">
-<div class="wrapper">
+<body>
 
-    <!-- Navbar -->
-    <nav class="main-header navbar navbar-expand navbar-dark">
-        <!-- Left: hamburger only -->
-        <ul class="navbar-nav">
-            <li class="nav-item">
-                <a class="nav-link" data-widget="pushmenu" href="#" role="button"><i class="fas fa-bars"></i></a>
-            </li>
-        </ul>
-
-        <!-- Right: connection + fullscreen -->
-        <ul class="navbar-nav ml-auto">
-            <li class="nav-item nav-conn">
+    <!-- ── Navbar ──────────────────────────────────────────────────────── -->
+    <nav class="top-nav">
+        <a class="nav-brand" href="/">
+            <span class="brand-icon"><i class="fas fa-network-wired"></i></span>
+            <span class="brand-name">SubnetScanner</span>
+            <span class="brand-tag">v1.0</span>
+        </a>
+        <div class="nav-actions">
+            <span class="nav-conn">
                 <span class="conn-dot" id="connectionDot"></span>
                 <span class="conn-label" id="connectionText">Disconnected</span>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link" data-widget="fullscreen" href="#" role="button"><i class="fas fa-expand-arrows-alt"></i></a>
-            </li>
-        </ul>
+            </span>
+            <button class="nav-btn" data-toggle="modal" data-target="#settingsModal" title="Settings">
+                <i class="fas fa-cog"></i>
+            </button>
+            <button class="nav-btn" id="btnFullscreen" title="Fullscreen">
+                <i class="fas fa-expand"></i>
+            </button>
+        </div>
     </nav>
 
-    <!-- Sidebar -->
-    <aside class="main-sidebar elevation-4">
-        <!-- Brand -->
-        <a href="/" class="brand-link">
-            <div class="brand-icon-wrap">
-                <i class="fas fa-network-wired"></i>
-            </div>
-            <span class="brand-text">SubnetScanner</span>
-        </a>
-
-        <!-- Sidebar body -->
-        <div class="sidebar">
-            <!-- Version tag -->
-            <div class="sidebar-version-bar">
-                <i class="fas fa-code-branch"></i> v1.0.0
-            </div>
-
-            <!-- Navigation -->
-            <nav class="sidebar-nav">
-                <ul class="nav nav-pills nav-sidebar flex-column" data-widget="treeview" role="menu">
-                    <li class="nav-header">SCANNING</li>
-                    <li class="nav-item">
-                        <a href="/" class="nav-link active">
-                            <i class="nav-icon fas fa-satellite-dish"></i>
-                            <p>Ping Sweep</p>
-                        </a>
-                    </li>
-
-                    <li class="nav-header">TOOLS</li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link disabled">
-                            <i class="nav-icon fas fa-crosshairs"></i>
-                            <p>Port Scanner <span class="soon-tag">Soon</span></p>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link disabled">
-                            <i class="nav-icon fas fa-route"></i>
-                            <p>Traceroute <span class="soon-tag">Soon</span></p>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link disabled">
-                            <i class="nav-icon fas fa-fingerprint"></i>
-                            <p>OS Detection <span class="soon-tag">Soon</span></p>
-                        </a>
-                    </li>
-
-                    <li class="nav-header">SYSTEM</li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link disabled">
-                            <i class="nav-icon fas fa-cog"></i>
-                            <p>Settings <span class="soon-tag">Soon</span></p>
-                        </a>
-                    </li>
-                </ul>
-            </nav>
-        </div>
-    </aside>
-
-    <!-- Content -->
-    <div class="content-wrapper">
+    <!-- ── Main Content ────────────────────────────────────────────────── -->
+    <main class="app-main">
         {% block content %}{% endblock %}
+    </main>
+
+    <!-- ── Footer ──────────────────────────────────────────────────────── -->
+    <footer class="app-footer">
+        <span>&copy; 2026 Subnet Scanner</span>
+        <span>Flask &middot; Nmap &middot; Socket.IO &middot; Deep Scan &middot; WHOIS</span>
+    </footer>
+
+    <!-- ── Settings Modal ──────────────────────────────────────────────── -->
+    <div class="modal fade" id="settingsModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fas fa-cog mr-2"></i>Settings</h5>
+                    <button type="button" class="modal-close" data-dismiss="modal" aria-label="Close">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+
+                    <!-- Scan Options -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-satellite-dish mr-2"></i>Quick Sweep</h6>
+                        <div class="setting-row">
+                            <label for="settingTimeout">Ping Timeout (ms)</label>
+                            <input type="number" class="form-input sm" id="settingTimeout" value="1000" min="100" max="10000" step="100">
+                            <small>Max wait time per host ping</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingThreads">Concurrent Threads</label>
+                            <input type="number" class="form-input sm" id="settingThreads" value="50" min="1" max="500">
+                            <small>Number of parallel scan threads</small>
+                        </div>
+                    </div>
+
+                    <!-- Deep Scan / Full Scan -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-crosshairs mr-2"></i>Full Scan</h6>
+                        <div class="setting-row">
+                            <label for="settingNmapArgs">Nmap Arguments</label>
+                            <input type="text" class="form-input sm" id="settingNmapArgs" value="-sV --top-ports 20 -T4" placeholder="-sV --top-ports 20 -T4">
+                            <small>Flags for per-host Nmap scan</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingNmapTopPorts">Nmap Top Ports</label>
+                            <select class="form-input sm" id="settingNmapTopPorts">
+                                <option value="20" selected>20 (fast)</option>
+                                <option value="100">100</option>
+                                <option value="500">500</option>
+                                <option value="1000">1000 (thorough)</option>
+                            </select>
+                            <small>Number of top ports to scan per host</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingDeepTimeout">Probe Timeout (s)</label>
+                            <input type="number" class="form-input sm" id="settingDeepTimeout" value="5" min="1" max="30" step="1">
+                            <small>Timeout per deep probe (HTTP, SSL, banner)</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingSsdpTimeout">SSDP Timeout (s)</label>
+                            <input type="number" class="form-input sm" id="settingSsdpTimeout" value="4" min="1" max="15" step="1">
+                            <small>Wait time for UPnP device discovery</small>
+                        </div>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepHttp" checked>
+                            <span class="toggle-switch"></span>
+                            HTTP/HTTPS probing
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepSsl" checked>
+                            <span class="toggle-switch"></span>
+                            SSL/TLS certificate analysis
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepBanners" checked>
+                            <span class="toggle-switch"></span>
+                            TCP banner grabbing
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepSsdp" checked>
+                            <span class="toggle-switch"></span>
+                            SSDP / UPnP discovery
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingDeepMacVendor" checked>
+                            <span class="toggle-switch"></span>
+                            MAC vendor lookup (OUI)
+                        </label>
+                    </div>
+
+                    <!-- Display -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-palette mr-2"></i>Display</h6>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingAutoScroll" checked>
+                            <span class="toggle-switch"></span>
+                            Auto-scroll to new results
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingShowOffline" checked>
+                            <span class="toggle-switch"></span>
+                            Show offline hosts in grid
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingAnimations" checked>
+                            <span class="toggle-switch"></span>
+                            Enable animations
+                        </label>
+                    </div>
+
+                    <!-- Notifications -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-bell mr-2"></i>Notifications</h6>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingToasts" checked>
+                            <span class="toggle-switch"></span>
+                            Show toast notifications
+                        </label>
+                        <label class="toggle-row">
+                            <input type="checkbox" id="settingSounds">
+                            <span class="toggle-switch"></span>
+                            Sound on scan complete
+                        </label>
+                    </div>
+
+                    <!-- Live Update -->
+                    <div class="settings-section">
+                        <h6 class="settings-heading"><i class="fas fa-sync-alt mr-2"></i>Live Update</h6>
+                        <div class="setting-row">
+                            <label for="settingLiveInterval">Update Interval</label>
+                            <select class="form-input sm" id="settingLiveInterval">
+                                <option value="30">30 seconds</option>
+                                <option value="60" selected>1 minute</option>
+                                <option value="120">2 minutes</option>
+                                <option value="300">5 minutes</option>
+                                <option value="600">10 minutes</option>
+                            </select>
+                            <small>Wait time after each completed ping round</small>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingLivePingCount">Pings per Host</label>
+                            <input type="number" class="form-input sm" id="settingLivePingCount" value="2" min="1" max="5" step="1">
+                            <small>More pings = more reliable, but slower</small>
+                        </div>
+                    </div>
+
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost" id="btnResetSettings">
+                        <i class="fas fa-undo mr-1"></i>Reset
+                    </button>
+                    <button type="button" class="btn btn-primary-custom" data-dismiss="modal">
+                        <i class="fas fa-check mr-1"></i>Done
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="main-footer">
-        <div class="float-right d-none d-sm-inline-block">
-            <strong>Built with</strong> Flask + AdminLTE + Nmap
-        </div>
-        <strong>&copy; 2026 Subnet Scanner</strong>
-    </footer>
-</div>
+    <!-- ── Scripts ─────────────────────────────────────────────────────── -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.7/js/dataTables.bootstrap4.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 
-<!-- jQuery -->
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<!-- Bootstrap 4 -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
-<!-- AdminLTE -->
-<script src="https://cdn.jsdelivr.net/npm/admin-lte@3.2/dist/js/adminlte.min.js"></script>
-<!-- DataTables -->
-<script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
-<script src="https://cdn.datatables.net/1.13.7/js/dataTables.bootstrap4.min.js"></script>
-<script src="https://cdn.datatables.net/responsive/2.5.0/js/dataTables.responsive.min.js"></script>
-<!-- Socket.IO -->
-<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <script>
+        // Fullscreen toggle
+        document.getElementById('btnFullscreen').addEventListener('click', function () {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        });
+    </script>
 
-{% block extra_js %}{% endblock %}
+    {% block extra_js %}{% endblock %}
 </body>
 </html>
